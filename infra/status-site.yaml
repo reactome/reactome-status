@@ -101,8 +101,9 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD]
           Compress: true
-          # Managed "CachingOptimized": honours the Cache-Control set on each object by the collector/deploy script.
-          CachePolicyId: 658327ea-f89d-4fbd-85d3-8f6ba4d5e1e5
+          # Managed "UseOriginCacheControlHeaders": caches for exactly as long as the Cache-Control
+          # header set on each object by the collector / deploy script.
+          CachePolicyId: 83da9c7e-98b4-4e11-a168-04f0df8e2c65
           # Managed "SecurityHeadersPolicy"
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
         CustomErrorResponses:
