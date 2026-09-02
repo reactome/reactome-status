@@ -1,0 +1,17 @@
+[Unit]
+Description=Reactome status collector (one run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=reactome-status
+Group=reactome
+SupplementaryGroups=adm docker
+StateDirectory=reactome-status
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/reactome-status
+ExecStart=/usr/bin/python3 /opt/reactome-status/collector.py -c /etc/reactome-status/config.json
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=240

@@ -1,0 +1,8 @@
+# collector output pulled locally for testing the page
+site/data/
+# local state
+*.sqlite
+state/
+__pycache__/
+*.pyc
+.DS_Store

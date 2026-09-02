@@ -1,0 +1,5 @@
+{
+  "hosts": [
+    {"name": "reactome.org", "title": "reactome.org — production web server", "prefix": "data/reactome.org"}
+  ]
+}

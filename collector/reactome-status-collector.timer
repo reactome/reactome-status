@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Reactome status collector every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=10s
+RandomizedDelaySec=0
+Persistent=false
+
+[Install]
+WantedBy=timers.target
