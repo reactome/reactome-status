@@ -13,8 +13,8 @@ if ! id -u "$SVC_USER" >/dev/null 2>&1; then
           --gid reactome "$SVC_USER"
   echo "created user $SVC_USER"
 fi
-# groups needed to read logs: reactome (apache access log), adm (/var/log), docker (docker inspect)
-usermod -a -G adm,docker "$SVC_USER"
+# groups needed to read logs: reactome (apache access log), adm (/var/log). Deliberately NOT docker.
+usermod -a -G adm "$SVC_USER"
 
 install -d -o root -g root -m 755 /opt/reactome-status /etc/reactome-status
 install -o root -g root -m 755 "$HERE/collector.py" /opt/reactome-status/collector.py
@@ -26,6 +26,7 @@ install -m 644 "$HERE/reactome-status-collector.timer"   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now reactome-status-collector.timer
 
+echo "To remove everything later: sudo $HERE/uninstall.sh"
 echo "running once now..."
 systemctl start reactome-status-collector.service
 systemctl status --no-pager reactome-status-collector.timer | head -5

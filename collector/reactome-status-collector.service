@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=reactome-status
 Group=reactome
-SupplementaryGroups=adm docker
+SupplementaryGroups=adm
 StateDirectory=reactome-status
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/reactome-status
@@ -15,3 +15,13 @@ ExecStart=/usr/bin/python3 /opt/reactome-status/collector.py -c /etc/reactome-st
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=240
+# hard caps: the collector must never compete with production services
+CPUQuota=50%
+MemoryMax=512M
+TasksMax=64
+# read-only view of the system apart from its own state directory
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/reactome-status
+PrivateTmp=yes
+NoNewPrivileges=yes

@@ -55,8 +55,8 @@ git clone https://github.com/reactome/reactome-status.git
 sudo reactome-status/collector/install.sh reactome-status/collector/config/reactome.org.json
 ```
 
-This creates a `reactome-status` system user (groups `reactome`, `adm`, `docker` for
-log and Docker access), installs the script under `/opt/reactome-status`, the config
+This creates a `reactome-status` system user (groups `reactome` and `adm` for log
+access; deliberately not `docker`, which would be root-equivalent), installs the script under `/opt/reactome-status`, the config
 under `/etc/reactome-status`, state under `/var/lib/reactome-status`, and enables a
 timer that runs at every 5-minute mark. Check with:
 
@@ -64,6 +64,10 @@ timer that runs at every 5-minute mark. Check with:
 systemctl list-timers reactome-status-collector.timer
 journalctl -u reactome-status-collector.service -n 20
 ```
+
+Stop it with `sudo systemctl disable --now reactome-status-collector.timer`, or remove it
+entirely with `sudo collector/uninstall.sh`. The unit is capped at half a CPU and 512 MB
+and runs with a read-only view of the filesystem.
 
 To try it without uploading (any user in the `reactome` group):
 

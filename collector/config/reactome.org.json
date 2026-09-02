@@ -5,46 +5,99 @@
   "aws_region": "us-east-1",
   "state_dir": "/var/lib/reactome-status",
   "interval_seconds": 300,
-  "disks": ["/"],
-
-  "systemd_units": ["apache2", "tomcat", "neo4j", "solr", "mysql", "docker"],
-  "docker_containers": ["biochat_chainlit", "biochat_chainlit_no_login", "biochat_postgres"],
-
+  "disks": [
+    "/"
+  ],
+  "systemd_units": [
+    "apache2",
+    "tomcat",
+    "neo4j",
+    "solr",
+    "mysql",
+    "docker"
+  ],
+  "docker_containers": [],
   "http_probes": [
-    {"name": "Website",         "url": "https://localhost/",  "headers": {"Host": "reactome.org"}, "insecure": true, "expect_status": [200]},
-    {"name": "ContentService",  "url": "http://localhost/ContentService/data/database/version",    "capture_body": true},
-    {"name": "AnalysisService", "url": "http://localhost/AnalysisService/database/version",        "capture_body": true},
-    {"name": "PathwayBrowser",  "url": "http://localhost:8080/PathwayBrowser/"},
-    {"name": "Neo4j",           "url": "http://127.0.0.1:7474/"},
-    {"name": "Chatbot",         "url": "http://localhost:8001/chat/guest/",                        "expect_status": [200, 301, 302, 404]}
+    {
+      "name": "Website",
+      "url": "https://localhost/",
+      "headers": {
+        "Host": "reactome.org"
+      },
+      "insecure": true,
+      "expect_status": [
+        200
+      ]
+    },
+    {
+      "name": "ContentService",
+      "url": "http://localhost/ContentService/data/database/version",
+      "capture_body": true
+    },
+    {
+      "name": "AnalysisService",
+      "url": "http://localhost/AnalysisService/database/version",
+      "capture_body": true
+    },
+    {
+      "name": "PathwayBrowser",
+      "url": "http://localhost:8080/PathwayBrowser/"
+    },
+    {
+      "name": "Neo4j",
+      "url": "http://127.0.0.1:7474/"
+    },
+    {
+      "name": "Chatbot",
+      "url": "http://localhost:8001/chat/guest/",
+      "expect_status": [
+        200,
+        301,
+        302,
+        404
+      ]
+    }
   ],
   "tcp_probes": [
-    {"name": "Solr",  "host": "127.0.0.1", "port": 8983},
-    {"name": "MySQL", "host": "127.0.0.1", "port": 3306},
-    {"name": "Neo4jBolt", "host": "127.0.0.1", "port": 7687}
+    {
+      "name": "Solr",
+      "host": "127.0.0.1",
+      "port": 8983
+    },
+    {
+      "name": "MySQL",
+      "host": "127.0.0.1",
+      "port": 3306
+    },
+    {
+      "name": "Neo4jBolt",
+      "host": "127.0.0.1",
+      "port": 7687
+    },
+    {
+      "name": "ChatbotPostgres",
+      "host": "127.0.0.1",
+      "port": 5432
+    }
   ],
-
   "service_probe": {
     "tomcat": "ContentService",
     "neo4j": "Neo4j",
     "apache2": "Website",
     "solr": "Solr",
-    "mysql": "MySQL",
-    "biochat_chainlit_no_login": "Chatbot"
+    "mysql": "MySQL"
   },
-
   "apache_status_url": "http://localhost/server-status?auto",
-
   "access_log": {
     "path": "/usr/local/reactomes/Reactome/production/Website/apache_logs/extended_log",
     "max_bytes_per_run": 209715200,
     "groups": {
-      "ContentService":  "^/ContentService/",
+      "ContentService": "^/ContentService/",
       "AnalysisService": "^/AnalysisService/",
-      "PathwayBrowser":  "^/(PathwayBrowser|DiagramJs|FireworksJs)/",
-      "RESTfulAPI":      "^/ReactomeRESTfulAPI/",
-      "Website":         "^/(content/|$|index\\.php|images/|templates/|media/|modules/|plugins/|download/|icon-lib)",
-      "Chatbot":         "^/chat"
+      "PathwayBrowser": "^/(PathwayBrowser|DiagramJs|FireworksJs)/",
+      "RESTfulAPI": "^/ReactomeRESTfulAPI/",
+      "Website": "^/(content/|$|index\\.php|images/|templates/|media/|modules/|plugins/|download/|icon-lib)",
+      "Chatbot": "^/chat"
     }
   }
 }
