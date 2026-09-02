@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reactome Status</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%230ca30c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <a href="https://reactome.org" class="logo" aria-label="Reactome">Reactome</a>
+    <h1>Status</h1>
+  </div>
+  <div class="top-right">
+    <div id="overall" class="pill pill-unknown" role="status">Loading…</div>
+    <div class="range" role="group" aria-label="Time range">
+      <button data-range="24h" class="active">24 h</button>
+      <button data-range="7d">7 d</button>
+      <button data-range="90d">90 d</button>
+    </div>
+  </div>
+</header>
+
+<div class="notice" role="note">
+  <strong>Alpha.</strong> This status page is under development and is not yet an official Reactome service.
+  Figures may be incomplete or wrong; please do not rely on it for external reporting.
+</div>
+
+<main id="hosts"></main>
+
+<footer>
+  <p>Each production host reports every 5 minutes to an S3 bucket; this page is static and keeps working when a host is down.
+     Times are shown in your local time zone. <a href="https://github.com/reactome/reactome-status">Source</a>.</p>
+  <p id="updated"></p>
+</footer>
+
+<template id="host-template">
+  <section class="host">
+    <div class="host-head">
+      <h2 class="host-title"></h2>
+      <div class="host-meta"></div>
+    </div>
+    <div class="banner" hidden></div>
+    <div class="cols">
+      <div class="card">
+        <h3>Services</h3>
+        <ul class="services"></ul>
+      </div>
+      <div class="card">
+        <h3>Health checks</h3>
+        <table class="probes"><thead><tr><th>Check</th><th>State</th><th class="num">Latency</th><th>Detail</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Host</h3>
+        <dl class="hostinfo"></dl>
+      </div>
+    </div>
+    <div class="charts"></div>
+    <div class="card events">
+      <h3>Recent service events</h3>
+      <table><thead><tr><th>When</th><th>Service</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
+      <p class="muted none" hidden>No restarts or outages recorded in the last 90 days.</p>
+    </div>
+  </section>
+</template>
+
+<script src="vendor/uPlot.iife.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
