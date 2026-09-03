@@ -132,6 +132,14 @@ Resources:
             Resource:
               - !Sub "${Bucket.Arn}/data/*"
               - !Sub "${Bucket.Arn}/raw/*"
+          - Sid: ListOwnPrefixes
+            # `aws s3 sync` lists the destination to decide what changed; allow listing only under data/ and raw/
+            Effect: Allow
+            Action: [s3:ListBucket]
+            Resource: !GetAtt Bucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: ["data/*", "raw/*"]
 
 Outputs:
   BucketName:
