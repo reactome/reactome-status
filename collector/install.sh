@@ -16,6 +16,10 @@ fi
 # groups needed to read logs: reactome (apache access log), adm (/var/log). Deliberately NOT docker.
 usermod -a -G adm "$SVC_USER"
 
+# pause the timer while files are replaced so a scheduled run cannot start mid-copy
+systemctl stop reactome-status-collector.timer 2>/dev/null || true
+while systemctl is-active --quiet reactome-status-collector.service; do sleep 1; done
+
 install -d -o root -g root -m 755 /opt/reactome-status /etc/reactome-status
 install -o root -g root -m 755 "$HERE/collector.py" /opt/reactome-status/collector.py
 install -o root -g root -m 644 "$CONFIG_SRC" /etc/reactome-status/config.json
@@ -29,5 +33,6 @@ systemctl enable --now reactome-status-collector.timer
 echo "To remove everything later: sudo $HERE/uninstall.sh"
 echo "running once now..."
 systemctl start reactome-status-collector.service
+echo "installed version: $(grep -oE 'VERSION = "[0-9.]+"' /opt/reactome-status/collector.py | tr -d '\"' | cut -d= -f2)"
 systemctl status --no-pager reactome-status-collector.timer | head -5
 journalctl -u reactome-status-collector.service -n 5 --no-pager

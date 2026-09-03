@@ -29,7 +29,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 NOW = time.time()
 
 
@@ -497,7 +497,9 @@ def _avg(vals):
 
 
 def _merge_points(t, pts):
-    m = {"t": t, "n": len(pts)}
+    # t is the bucket start; t0/t1 are the first and last real samples inside it, so the page
+    # can compute "expected samples" from real coverage rather than from bucket boundaries
+    m = {"t": t, "n": len(pts), "t0": min(p["t"] for p in pts), "t1": max(p["t"] for p in pts)}
     for k in ("load1", "mem", "disk", "busy", "idle"):
         m[k] = _avg([p.get(k) for p in pts])
     m["svc"] = {}
@@ -629,7 +631,7 @@ def main():
 
     files = {
         "latest.json": (snap, "max-age=60"),
-        "series/24h.json": ({"host": CONFIG["host"], "step_s": 300, "points": rollup(db, 86400, 300)}, "max-age=120"),
+        "series/24h.json": ({"host": CONFIG["host"], "step_s": 300, "generated": int(NOW), "points": rollup(db, 86400, 300)}, "max-age=120"),
         "events.json": ({"host": CONFIG["host"], "events": all_events}, "max-age=120"),
     }
     # the coarse series change slowly and cost a full history scan: rebuild them every 30 min,
@@ -637,7 +639,7 @@ def main():
     run_no = int(NOW) // CONFIG.get("interval_seconds", 300)
     for rel, span, step in (("series/7d.json", 7 * 86400, 1800), ("series/90d.json", 90 * 86400, 21600)):
         if run_no % 6 == 0 or not os.path.exists(os.path.join(out_dir, rel)):
-            files[rel] = ({"host": CONFIG["host"], "step_s": step, "points": rollup(db, span, step)}, None)
+            files[rel] = ({"host": CONFIG["host"], "step_s": step, "generated": int(NOW), "points": rollup(db, span, step)}, None)
     raw_rel = datetime.fromtimestamp(NOW, tz=timezone.utc).strftime("raw/%Y/%m/%d/%H%M.json")
     files[raw_rel] = (snap, None)
     for rel, (obj, _) in files.items():
