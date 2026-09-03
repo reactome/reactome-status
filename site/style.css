@@ -38,6 +38,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 40px; display:grid;
 .host { display:grid; gap:14px; }
 .host-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
 .host-meta { color:var(--ink-2); font-size:13px; }
+.banner[hidden] { display:none; }
 .banner { display:grid; gap:6px; padding:12px 14px; border-radius:8px; border:1px solid var(--critical); background:color-mix(in srgb, var(--critical) 10%, var(--surface)); font-weight:500; }
 .banner.warn { border-color:var(--warn); background:color-mix(in srgb, var(--warn) 12%, var(--surface)); }
 .cols { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px; }
