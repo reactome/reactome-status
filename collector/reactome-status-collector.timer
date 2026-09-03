@@ -2,7 +2,9 @@
 Description=Run the Reactome status collector every 5 minutes
 
 [Timer]
-OnCalendar=*:0/5
+# minute 1,6,11,... rather than 0,5,10,...: many cron jobs (including Apache restarts here)
+# fire at :00 and :30, and sampling at that exact second would record false outages
+OnCalendar=*:1/5
 AccuracySec=10s
 RandomizedDelaySec=0
 Persistent=false
