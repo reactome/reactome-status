@@ -104,8 +104,7 @@ Resources:
           # Managed "UseOriginCacheControlHeaders": caches for exactly as long as the Cache-Control
           # header set on each object by the collector / deploy script.
           CachePolicyId: 83da9c7e-98b4-4e11-a168-04f0df8e2c65
-          # Managed "SecurityHeadersPolicy"
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
         CustomErrorResponses:
           # S3 answers 403 for missing keys behind OAC; expose them as 404 and do not cache misses for long
           - { ErrorCode: 403, ResponseCode: 404, ResponsePagePath: /404.json, ErrorCachingMinTTL: 10 }
@@ -116,6 +115,25 @@ Resources:
           MinimumProtocolVersion: TLSv1.2_2021
       Tags:
         - { Key: Project, Value: reactome-status }
+
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security-headers"
+        Comment: Security headers incl. a CSP that only allows the page's own files and Google Fonts.
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: >-
+              default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com;
+              font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self';
+              base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { Override: true, FrameOption: DENY }
+          ReferrerPolicy: { Override: true, ReferrerPolicy: strict-origin-when-cross-origin }
+          StrictTransportSecurity: { Override: true, AccessControlMaxAgeSec: 31536000, IncludeSubdomains: false }
+          XSSProtection: { Override: true, Protection: true, ModeBlock: true }
 
   CollectorUploadPolicy:
     Type: AWS::IAM::ManagedPolicy

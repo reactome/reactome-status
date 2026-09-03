@@ -69,10 +69,12 @@ Stop it with `sudo systemctl disable --now reactome-status-collector.timer`, or 
 entirely with `sudo collector/uninstall.sh`. The unit is capped at half a CPU and 512 MB
 and runs with a read-only view of the filesystem.
 
-To try it without uploading (any user in the `reactome` group):
+To try it without uploading (any user in the `reactome` group), point it at a private state
+directory so it does not touch the installed collector's history:
 
 ```bash
-python3 collector/collector.py -c collector/config/reactome.org.json --no-upload --print
+python3 -c 'import json; c=json.load(open("collector/config/reactome.org.json")); c["state_dir"]="/tmp/status-test"; json.dump(c, open("/tmp/status-test.json","w"))'
+python3 collector/collector.py -c /tmp/status-test.json --no-upload --print
 ```
 
 ## Adding another host (e.g. curator.reactome.org)

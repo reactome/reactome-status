@@ -128,6 +128,8 @@
     const pts = d.series?.points || [];
     state.step = d.series?.step_s || 300;
     state.interval = latest.interval_seconds || 300;
+    state.seriesGenerated = d.series?.generated || null;
+    state.hostFresh = age <= STALE_WARN_S;
     for (const [name, s] of Object.entries(latest.services || {})) {
       const li = el("li");
       const dot = el("span", `dot ${s.up ? "up" : "down"}`);
@@ -206,10 +208,14 @@
    *  now counts; a missing sample (host not reporting) counts as DOWN. Time before the first sample
    *  counts as no data. bins = worst value per time slice for the strip. */
   function uptime(points, pick) {
-    const span = RANGE_SECONDS[range], end = Math.floor(nowS()), start = end - span;
+    const span = RANGE_SECONDS[range], now = Math.floor(nowS()), start = now - span;
     const step = state.step || 300;
+    // While the host is reporting, the coarse series may lag behind by up to 30 min: measure
+    // coverage up to when the series was generated. If the host is NOT reporting, measure up
+    // to now so the silence counts as down.
+    const end = state.hostFresh && state.seriesGenerated ? Math.min(now, state.seriesGenerated) : now;
     const bins = new Array(STRIP_BINS).fill(null);
-    const have = points.filter(p => pick(p) != null && p.t >= start);
+    const have = points.filter(p => pick(p) != null && (p.t1 ?? p.t) >= start);
     if (!have.length) return { pct: null, bins };
     let sum = 0;
     for (const p of have) {
@@ -219,13 +225,13 @@
       bins[b] = bins[b] == null ? v : Math.min(bins[b], v);
     }
     // expected samples from the first one we have until now (minus one interval of grace for the run in progress)
-    const first = have[0].t;
+    const first = have[0].t0 ?? have[0].t;                  // first real sample, not the bucket boundary
     const expected = Math.max(1, Math.floor((end - first) / (state.interval || 300)));
     const observed = have.reduce((a, p) => a + (p.n || 1), 0);
     const ratio = Math.min(1, sum / Math.max(expected, observed));
     // strip slices after the first sample with no data at all were outages of the whole host
     const firstBin = Math.floor((first - start) / span * STRIP_BINS);
-    const lastBin = Math.floor((end - step * 2 - start) / span * STRIP_BINS);
+    const lastBin = Math.floor((end - step - start) / span * STRIP_BINS);
     for (let b = firstBin + 1; b <= lastBin && b < STRIP_BINS; b++) if (bins[b] == null) bins[b] = 0;
     const pct = +(100 * ratio).toFixed(ratio >= 0.9995 ? 1 : 2);
     return { pct, bins };
