@@ -29,7 +29,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 NOW = time.time()
 
 
@@ -157,6 +157,17 @@ def docker_containers(names):
 
 # ------------------------------------------------------------------------- probes
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Report the service's own answer (3xx included) instead of following redirects, which could
+    otherwise lead a localhost probe out through the public site."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER_INSECURE = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+
+
 def http_probes(probes):
     out = {}
     for p in probes:
@@ -165,8 +176,8 @@ def http_probes(probes):
         try:
             headers = {"User-Agent": "reactome-status-collector", **p.get("headers", {})}
             req = urllib.request.Request(p["url"], headers=headers)
-            ctx = ssl._create_unverified_context() if p.get("insecure") else None
-            with urllib.request.urlopen(req, timeout=p.get("timeout", 10), context=ctx) as r:
+            opener = _OPENER_INSECURE if p.get("insecure") else _OPENER
+            with opener.open(req, timeout=p.get("timeout", 10)) as r:
                 body = r.read(65536)
                 res["status"] = r.status
                 expect = p.get("expect_status", [200])
@@ -619,10 +630,14 @@ def main():
     files = {
         "latest.json": (snap, "max-age=60"),
         "series/24h.json": ({"host": CONFIG["host"], "step_s": 300, "points": rollup(db, 86400, 300)}, "max-age=120"),
-        "series/7d.json": ({"host": CONFIG["host"], "step_s": 1800, "points": rollup(db, 7 * 86400, 1800)}, "max-age=600"),
-        "series/90d.json": ({"host": CONFIG["host"], "step_s": 21600, "points": rollup(db, 90 * 86400, 21600)}, "max-age=1800"),
         "events.json": ({"host": CONFIG["host"], "events": all_events}, "max-age=120"),
     }
+    # the coarse series change slowly and cost a full history scan: rebuild them every 30 min,
+    # or whenever the file is missing
+    run_no = int(NOW) // CONFIG.get("interval_seconds", 300)
+    for rel, span, step in (("series/7d.json", 7 * 86400, 1800), ("series/90d.json", 90 * 86400, 21600)):
+        if run_no % 6 == 0 or not os.path.exists(os.path.join(out_dir, rel)):
+            files[rel] = ({"host": CONFIG["host"], "step_s": step, "points": rollup(db, span, step)}, None)
     raw_rel = datetime.fromtimestamp(NOW, tz=timezone.utc).strftime("raw/%Y/%m/%d/%H%M.json")
     files[raw_rel] = (snap, None)
     for rel, (obj, _) in files.items():
