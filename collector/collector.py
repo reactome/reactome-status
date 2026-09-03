@@ -19,6 +19,7 @@ Only aggregates leave the host: no client IPs, user agents or URLs.
 import argparse
 import json
 import os
+import posixpath
 import re
 import socket
 import ssl
@@ -29,9 +30,20 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 NOW = time.time()
 STATE = {}   # previous run's state, loaded in main()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Report the service's own answer (3xx included) instead of following redirects, which could
+    otherwise lead a localhost probe out through the public site."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER_INSECURE = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
 
 
 def log(msg):
@@ -88,8 +100,9 @@ def host_metrics():
         try:
             st = os.statvfs(path)
             total = st.f_blocks * st.f_frsize
-            free = st.f_bavail * st.f_frsize
-            disks[path] = {"total": total, "used_pct": round(100.0 * (total - free) / total, 1)}
+            used = (st.f_blocks - st.f_bfree) * st.f_frsize
+            avail = st.f_bavail * st.f_frsize
+            disks[path] = {"total": total, "used_pct": round(100.0 * used / max(1, used + avail), 1)}  # same formula as df
         except OSError:
             pass
     m["disks"] = disks
@@ -168,17 +181,6 @@ def docker_containers(names):
 
 # ------------------------------------------------------------------------- probes
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Report the service's own answer (3xx included) instead of following redirects, which could
-    otherwise lead a localhost probe out through the public site."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
-_OPENER_INSECURE = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
-
-
 def http_probes(probes):
     out = {}
     for p in probes:
@@ -195,8 +197,10 @@ def http_probes(probes):
                 res["ok"] = r.status in expect
                 if p.get("expect_text") and p["expect_text"] not in body.decode("utf-8", "replace"):
                     res["ok"] = False
-                if p.get("capture_body"):
-                    res["body"] = body.decode("utf-8", "replace").strip()[:200]
+                if p.get("capture_body") and r.status == 200:
+                    text = body.decode("utf-8", "replace").strip()
+                    if re.fullmatch(r"[\w.\- ]{1,40}", text):   # e.g. a database version; never an HTML error page
+                        res["body"] = text
         except urllib.error.HTTPError as e:
             res["status"] = e.code
             res["ok"] = e.code in p.get("expect_status", [200])
@@ -226,7 +230,7 @@ def apache_status(url):
     if not url:
         return None
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
+        with _OPENER.open(url, timeout=5) as r:
             text = r.read().decode("utf-8", "replace")
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": type(e).__name__}
@@ -261,7 +265,11 @@ def apache_status(url):
 # Parsed with a linear scan rather than a regex: the request line is client-controlled and a
 # backtracking regex could be made to take tens of seconds per line (ReDoS); the scan also
 # honours Apache's escaping so an embedded \" cannot spoof the status or size fields.
-MAX_LINE_BYTES = 16 * 1024
+MAX_LINE_BYTES = 1024 * 1024
+
+
+def raw_path_had_slash(p):
+    return p.split("?", 1)[0].endswith("/")
 
 
 def parse_line(line):
@@ -410,6 +418,10 @@ def access_log_stats(cfg, state):
         parsed += 1
         path_, status, nbytes, ms = parsed_line
         klass = f"s{status // 100}xx" if 2 <= status // 100 <= 5 else None
+        if path_.startswith("/"):
+            path_ = posixpath.normpath(path_.split("?", 1)[0])
+            if raw_path_had_slash(parsed_line[0]):
+                path_ += "/"  # normpath strips a trailing slash; the group regexes expect it
         target = groups["other"]
         for name, rx in groups_cfg:
             if rx.search(path_):
@@ -449,6 +461,10 @@ def access_log_stats(cfg, state):
         return {"ok": False, "error": type(e).__name__}
 
     state["access_log"] = {"inode": st.st_ino, "offset": offset, "ts": NOW}
+    if parsed and not total["_ms"]:
+        log("access log: no line carried a %{ms}T field; response-time figures will be empty (LogFormat changed?)")
+    if parsed + skipped and skipped > 0.05 * (parsed + skipped):
+        log(f"access log: {skipped} of {parsed + skipped} lines could not be parsed (LogFormat changed?)")
     result["window_s"] = int(NOW - prev.get("ts", NOW)) if prev.get("ts") else None
     result["parsed"] = parsed
     result["unparsed"] = skipped
@@ -472,7 +488,8 @@ def detect_restarts(services, probes, state, events):
             # scheduled restarts (e.g. Apache's half-hourly cron) are not events, but a recovery
             # after a recorded outage still is, so "went down" always gets its closing entry
             if old is not None and not old.get("up"):
-                events.append({"ts": iso(NOW), "service": name, "kind": "healthy", "started_at": svc.get("since"),
+                events.append({"ts": iso(NOW), "service": name, "kind": "healthy",
+                               "started_at": pending.get(name, svc.get("since")),
                                "healthy_within_s": None, "note": "back up after an outage"})
             pending.pop(name, None)
             continue
@@ -564,13 +581,19 @@ def _merge_points(t, pts):
     m = {"t": t, "n": len(pts), "t0": min(p["t"] for p in pts), "t1": max(p["t"] for p in pts)}
     for k in ("load1", "mem", "disk", "busy", "idle"):
         m[k] = _avg([p.get(k) for p in pts])
-    m["svc"] = {}
+    # up/down fractions are kept unrounded (a single down sample in a 6 h bucket is 1/72 = 0.0139
+    # and must not round away) and each key carries its own sample count, since a service or probe
+    # may exist for only part of a bucket
+    m["svc"], m["svc_n"] = {}, {}
     for k in {k for p in pts for k in p.get("svc", {})}:
-        m["svc"][k] = round(_avg([p["svc"].get(k) for p in pts if k in p.get("svc", {})]) or 0, 2)
-    m["probe_ok"] = {}
-    m["probe_ms"] = {}
+        vals = [p["svc"][k] for p in pts if k in p.get("svc", {}) and p["svc"][k] is not None]
+        m["svc"][k] = round(sum(vals) / len(vals), 6) if vals else None
+        m["svc_n"][k] = len(vals)
+    m["probe_ok"], m["probe_n"], m["probe_ms"] = {}, {}, {}
     for k in {k for p in pts for k in p.get("probe_ok", {})}:
-        m["probe_ok"][k] = round(_avg([p["probe_ok"].get(k) for p in pts if k in p.get("probe_ok", {})]) or 0, 2)
+        vals = [p["probe_ok"][k] for p in pts if k in p.get("probe_ok", {}) and p["probe_ok"][k] is not None]
+        m["probe_ok"][k] = round(sum(vals) / len(vals), 6) if vals else None
+        m["probe_n"][k] = len(vals)
         m["probe_ms"][k] = _avg([p.get("probe_ms", {}).get(k) for p in pts])
     logs = [p for p in pts if p.get("log")]
     if logs:
@@ -594,9 +617,14 @@ def _weighted(pairs):
 
 # ------------------------------------------------------------------------ upload
 
-def s3_sync(local_dir, s3_uri, cache_control, excludes=()):
-    cmd = ["aws", "s3", "sync", "--only-show-errors", local_dir, s3_uri,
+def s3_sync(local_dir, s3_uri, cache_control, excludes=(), mode="sync"):
+    """mode="sync" uploads what changed (size/mtime); mode="cp" uploads everything unconditionally,
+    which is what the small live files need: sync can skip a rewritten same-size file when the host
+    clock lags S3, leaving latest.json stale."""
+    cmd = ["aws", "s3", mode, "--only-show-errors", local_dir, s3_uri,
            "--content-type", "application/json", "--cache-control", cache_control]
+    if mode == "cp":
+        cmd.append("--recursive")
     for e in excludes:
         cmd += ["--exclude", e]
     if CONFIG.get("aws_region"):
@@ -605,6 +633,15 @@ def s3_sync(local_dir, s3_uri, cache_control, excludes=()):
     if rc != 0:
         log(f"upload failed for {s3_uri}: {se.strip()}")
     return rc == 0
+
+
+def _valid_json_file(path):
+    try:
+        with open(path) as f:
+            json.load(f)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def prune_raw(raw_dir, keep_days=2):
@@ -638,6 +675,10 @@ def main():
     with open(args.config) as f:
         CONFIG = json.load(f)
     state_dir = CONFIG.get("state_dir", "/var/lib/reactome-status")
+    if os.geteuid() == 0 and os.path.exists(state_dir) and os.stat(state_dir).st_uid != 0:
+        # a root run would leave root-owned files (e.g. today's raw/ directory) that break every later service run
+        log(f"refusing to run as root against {state_dir}; use: sudo -u reactome-status python3 {sys.argv[0]} -c {args.config} ...")
+        sys.exit(2)
     os.makedirs(state_dir, exist_ok=True)
     out_dir = os.path.join(state_dir, "out")
     os.makedirs(os.path.join(out_dir, "series"), exist_ok=True)
@@ -672,12 +713,6 @@ def main():
 
     events = []
     detect_restarts(services, probes, state, events)
-
-    # persist the log offset and service state now, before anything that could be slow or fail:
-    # a killed run must never re-count the same log window
-    with open(state_path + ".tmp", "w") as f:
-        json.dump(state, f)
-    os.replace(state_path + ".tmp", state_path)
     # everything below is published on a public page: keep only what a reader needs
     for pr in snap["probes"].values():
         pr["kind"] = "tcp" if "port" in pr else "http"
@@ -688,35 +723,65 @@ def main():
     if snap.get("access_log"):
         snap["access_log"].pop("path", None)
 
-    db = db_connect(os.path.join(state_dir, "points.sqlite"))
+    db_path = os.path.join(state_dir, "points.sqlite")
+    try:
+        db = db_connect(db_path)
+        db.execute("SELECT count(*) FROM points").fetchone()
+    except sqlite3.DatabaseError as e:
+        quarantined = f"{db_path}.corrupt-{int(NOW)}"
+        log(f"points.sqlite is unreadable ({e}); moving it to {quarantined} and starting a new history "
+            f"(the raw/ archive on S3 still has every snapshot)")
+        os.replace(db_path, quarantined)
+        db = db_connect(db_path)
+
+    # O5: a stepped clock must not wipe the history or record negative windows
+    last_ts = db.execute("SELECT max(ts) FROM points").fetchone()[0]
+    clock_ok = last_ts is None or (last_ts - 3600 <= NOW <= last_ts + 48 * 3600)
+    if not clock_ok:
+        log(f"clock sanity: last stored sample {iso(last_ts)} vs now {iso(NOW)}; skipping history pruning this run")
+    lg_ = snap.get("access_log") or {}
+    if lg_.get("window_s") is not None and lg_["window_s"] <= 0:
+        lg_["window_s"] = None   # negative/zero window after a clock step: rates for this point are meaningless
     with db:
+        slot = int(NOW) - int(NOW) % CONFIG.get("interval_seconds", 300)
+        db.execute("DELETE FROM points WHERE ts >= ? AND ts < ?", (slot, slot + CONFIG.get("interval_seconds", 300)))
         db.execute("INSERT OR REPLACE INTO points (ts, json) VALUES (?, ?)", (int(NOW), json.dumps(compact_point(snap))))
         for ev in events:
             db.execute("INSERT INTO events (ts, json) VALUES (?, ?)", (int(NOW), json.dumps(ev)))
-        db.execute("DELETE FROM points WHERE ts < ?", (int(NOW) - 91 * 86400,))
-        db.execute("DELETE FROM events WHERE ts < ?", (int(NOW) - 91 * 86400,))
+        if clock_ok:
+            db.execute("DELETE FROM points WHERE ts < ?", (int(NOW) - 91 * 86400,))
+            db.execute("DELETE FROM events WHERE ts < ?", (int(NOW) - 91 * 86400,))
+
+    # persist the log offset and service state now that the point is stored, before anything slow:
+    # a killed upload must never lead to re-counting the same log window
+    with open(state_path + ".tmp", "w") as f:
+        json.dump(state, f)
+    os.replace(state_path + ".tmp", state_path)
 
     all_events = [json.loads(j) for (j,) in db.execute("SELECT json FROM events ORDER BY ts DESC LIMIT 500")]
     snap["recent_events"] = all_events[:20]
 
+    interval = CONFIG.get("interval_seconds", 300)
     files = {
-        "latest.json": (snap, "max-age=60"),
-        "series/24h.json": ({"host": CONFIG["host"], "step_s": 300, "generated": int(NOW), "points": rollup(db, 86400, 300)}, "max-age=120"),
-        "events.json": ({"host": CONFIG["host"], "events": all_events}, "max-age=120"),
+        "latest.json": snap,
+        "series/24h.json": {"host": CONFIG["host"], "step_s": interval, "generated": int(NOW), "points": rollup(db, 86400, interval)},
+        "events.json": {"host": CONFIG["host"], "events": all_events},
     }
     # the coarse series change slowly and cost a full history scan: rebuild them every 30 min,
-    # or whenever the file is missing
-    run_no = int(NOW) // CONFIG.get("interval_seconds", 300)
+    # or whenever the file is missing or unreadable
+    run_no = int(NOW) // interval
+    every = max(1, 1800 // interval)
     for rel, span, step in (("series/7d.json", 7 * 86400, 1800), ("series/90d.json", 90 * 86400, 21600)):
-        if run_no % 6 == 0 or not os.path.exists(os.path.join(out_dir, rel)):
-            files[rel] = ({"host": CONFIG["host"], "step_s": step, "generated": int(NOW), "points": rollup(db, span, step)}, None)
+        if run_no % every == 0 or not _valid_json_file(os.path.join(out_dir, rel)):
+            files[rel] = {"host": CONFIG["host"], "step_s": step, "generated": int(NOW), "points": rollup(db, span, step)}
     raw_rel = datetime.fromtimestamp(NOW, tz=timezone.utc).strftime("raw/%Y/%m/%d/%H%M.json")
-    files[raw_rel] = (snap, None)
-    for rel, (obj, _) in files.items():
+    files[raw_rel] = snap
+    for rel, obj in files.items():
         local = os.path.join(out_dir, rel)
         os.makedirs(os.path.dirname(local), exist_ok=True)
-        with open(local, "w") as f:
+        with open(local + ".tmp", "w") as f:       # atomic: a killed run never leaves a truncated file
             json.dump(obj, f, separators=(",", ":"))
+        os.replace(local + ".tmp", local)
     prune_raw(os.path.join(out_dir, "raw"))
 
     upload_ok = True
@@ -725,8 +790,14 @@ def main():
         prefix = CONFIG["s3_prefix"].strip("/")
         raw_prefix = CONFIG.get("s3_raw_prefix", f"raw/{CONFIG['host']}").strip("/")
         # two calls instead of one per file: live files (short cache) and the immutable raw archive
-        upload_ok = s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*"])
-        upload_ok = s3_sync(os.path.join(out_dir, "raw"), f"s3://{bucket}/{raw_prefix}/", "max-age=31536000, immutable") and upload_ok
+        upload_ok = s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*", "*.tmp"], mode="cp")
+        # raw archive: sync only the day directories kept locally (today and yesterday), so the
+        # listing stays at a few hundred objects instead of the whole 90-day archive
+        raw_root = os.path.join(out_dir, "raw")
+        for day in sorted({datetime.fromtimestamp(NOW - d * 86400, tz=timezone.utc).strftime("%Y/%m/%d") for d in (0, 1)}):
+            local_day = os.path.join(raw_root, day)
+            if os.path.isdir(local_day):
+                upload_ok = s3_sync(local_day, f"s3://{bucket}/{raw_prefix}/{day}/", "max-age=31536000, immutable", excludes=["*.tmp"]) and upload_ok
 
     if args.print:
         json.dump(snap, sys.stdout, indent=2)

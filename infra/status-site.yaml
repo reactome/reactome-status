@@ -98,12 +98,19 @@ Resources:
         IPV6Enabled: true
         PriceClass: PriceClass_100
         Origins:
-          - Id: s3
+          # the page itself: keys under site/, which the hosts' upload policy cannot write
+          - Id: site
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            OriginPath: /site
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          # host-uploaded snapshots: keys under data/ and raw/
+          - Id: uploads
             DomainName: !GetAtt Bucket.RegionalDomainName
             OriginAccessControlId: !GetAtt OriginAccessControl.Id
             S3OriginConfig: { OriginAccessIdentity: "" }
         DefaultCacheBehavior:
-          TargetOriginId: s3
+          TargetOriginId: site
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD]
@@ -115,18 +122,18 @@ Resources:
           # Whatever a host uploads is served as inert JSON: content-type is forced by a viewer-
           # response function and a sandboxing CSP means even an HTML upload cannot run or phish.
           - PathPattern: "data/*"
-            TargetOriginId: s3
+            TargetOriginId: uploads
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [GET, HEAD, OPTIONS]
             CachedMethods: [GET, HEAD]
             Compress: true
-            CachePolicyId: !Ref CachePolicy
+            CachePolicyId: !Ref DataCachePolicy
             ResponseHeadersPolicyId: !Ref DataHeaders
             FunctionAssociations:
               - EventType: viewer-response
                 FunctionARN: !GetAtt ForceJsonFunction.FunctionMetadata.FunctionARN
           - PathPattern: "raw/*"
-            TargetOriginId: s3
+            TargetOriginId: uploads
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [GET, HEAD, OPTIONS]
             CachedMethods: [GET, HEAD]
@@ -156,6 +163,22 @@ Resources:
         MinTTL: 0
         DefaultTTL: 60
         MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  DataCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-data-cache"
+        Comment: Live snapshots; an uploader cannot pin a bad file at the edge for longer than 5 minutes.
+        MinTTL: 0
+        DefaultTTL: 60
+        MaxTTL: 300
         ParametersInCacheKeyAndForwardedToOrigin:
           EnableAcceptEncodingGzip: true
           EnableAcceptEncodingBrotli: true
@@ -202,9 +225,8 @@ Resources:
           ContentSecurityPolicy:
             Override: true
             ContentSecurityPolicy: >-
-              default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com;
-              font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self';
-              base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+              default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self';
+              img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
           ContentTypeOptions: { Override: true }
           FrameOptions: { Override: true, FrameOption: DENY }
           ReferrerPolicy: { Override: true, ReferrerPolicy: strict-origin-when-cross-origin }
