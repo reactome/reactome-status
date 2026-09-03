@@ -99,5 +99,9 @@
       "Website": "^/(content/|$|index\\.php|images/|templates/|media/|modules/|plugins/|download/|icon-lib)",
       "Chatbot": "^/chat"
     }
-  }
+  },
+  "expected_restarts": [
+    "apache2"
+  ],
+  "_comment_expected_restarts": "apache2 is restarted by a root cron job every 30 minutes on purpose; do not log those as events"
 }

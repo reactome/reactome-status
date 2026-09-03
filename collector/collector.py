@@ -29,7 +29,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 NOW = time.time()
 
 
@@ -96,12 +96,19 @@ def host_metrics():
 
 # ----------------------------------------------------------------------- services
 
+TRANSIENT_STATES = {"activating", "deactivating", "reloading"}
+
+
 def systemd_units(units):
     out = {}
     for u in units:
-        rc, so, _ = run(["systemctl", "show", u, "-p",
-                         "ActiveState,SubState,ActiveEnterTimestamp,ExecMainStartTimestamp,NRestarts"])
-        props = dict(line.split("=", 1) for line in so.splitlines() if "=" in line)
+        props = _unit_props(u)
+        # a unit caught mid-restart is not an outage: give it a few seconds to settle before recording
+        for _ in range(4):
+            if props.get("ActiveState") not in TRANSIENT_STATES:
+                break
+            time.sleep(5)
+            props = _unit_props(u)
         since = props.get("ExecMainStartTimestamp") or props.get("ActiveEnterTimestamp") or ""
         out[u] = {
             "type": "systemd",
@@ -112,6 +119,12 @@ def systemd_units(units):
             "restarts": int(props.get("NRestarts") or 0),
         }
     return out
+
+
+def _unit_props(unit):
+    rc, so, _ = run(["systemctl", "show", unit, "-p",
+                     "ActiveState,SubState,ActiveEnterTimestamp,ExecMainStartTimestamp,NRestarts"])
+    return dict(line.split("=", 1) for line in so.splitlines() if "=" in line)
 
 
 def _systemd_ts(s):
@@ -379,8 +392,11 @@ def detect_restarts(services, probes, state, events):
     probe for it exists, record how long until the probe first passed."""
     prev = state.get("services") or {}
     pending = state.get("pending_recovery") or {}
+    expected = set(CONFIG.get("expected_restarts", []))
     for name, svc in services.items():
         old = prev.get(name)
+        if name in expected and svc.get("up"):
+            continue  # scheduled restarts (e.g. Apache's half-hourly cron) are not events
         if old is not None and svc.get("since") and old.get("since") != svc["since"]:
             ev = {"ts": iso(NOW), "service": name, "kind": "restart",
                   "started_at": svc["since"], "previous_start": old.get("since")}
