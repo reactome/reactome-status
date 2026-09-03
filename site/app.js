@@ -113,14 +113,22 @@
       status = "warn";
     }
 
-    // services
+    // services, with uptime over the selected range
     const ul = $(".services", sec);
+    const pts = d.series?.points || [];
     for (const [name, s] of Object.entries(latest.services || {})) {
       const li = el("li");
       const dot = el("span", `dot ${s.up ? "up" : "down"}`);
       dot.title = `${s.state}${s.sub ? ` (${s.sub})` : ""}`;
-      li.append(dot, el("span", null, name),
-        el("span", "since", s.up ? `up ${fmtDur(nowS() - parseTs(s.since))}${s.restarts ? ` · ${s.restarts} restarts` : ""}` : s.state));
+      const up = uptime(pts, p => p.svc?.[name]);
+      const box = el("div", "svc");
+      const row = el("div", "svc-row");
+      row.append(el("span", null, name));
+      const right = el("span", "since", s.up ? `up ${fmtDur(nowS() - parseTs(s.since))}${s.restarts ? ` · ${s.restarts} restarts` : ""} · ` : `${s.state} · `);
+      right.append(el("span", "pct", up.pct == null ? "–" : `${up.pct}%`));
+      row.append(right);
+      box.append(row, strip(up.bins, name));
+      li.append(dot, box);
       if (!s.up) status = "bad";
       ul.appendChild(li);
     }
@@ -132,8 +140,9 @@
       const st = el("span", "state");
       st.append(el("span", `dot ${p.ok ? "up" : "down"}`), document.createTextNode(p.ok ? "OK" : "Failing"));
       const detail = p.error ? p.error : p.status ? `HTTP ${p.status}${p.body ? ` · database v${p.body}` : ""}` : p.port ? `tcp/${p.port}` : "";
+      const up = uptime(pts, q => q.probe_ok?.[name]);
       tr.append(el("td", null, name), el("td")); tr.lastChild.appendChild(st);
-      tr.append(el("td", "num", fmtMs(p.ms)), el("td", "muted", detail));
+      tr.append(el("td", "num", fmtMs(p.ms)), el("td", "num", up.pct == null ? "–" : `${up.pct}%`), el("td", "muted", detail));
       if (!p.ok) status = "bad";
       tb.appendChild(tr);
     }
@@ -175,6 +184,39 @@
 
     sec.dataset.status = status;
     return sec;
+  }
+
+  // ------------------------------------------------------------ uptime
+  const STRIP_BINS = 60;
+  /** pct = mean availability over the loaded series; bins = worst value per time slice of the selected range. */
+  function uptime(points, pick) {
+    const span = RANGE_SECONDS[range], end = Math.floor(nowS()), start = end - span;
+    const bins = new Array(STRIP_BINS).fill(null);
+    let sum = 0, n = 0;
+    for (const p of points) {
+      const v = pick(p);
+      if (v == null) continue;
+      sum += v; n++;
+      const b = Math.min(STRIP_BINS - 1, Math.max(0, Math.floor((p.t - start) / span * STRIP_BINS)));
+      bins[b] = bins[b] == null ? v : Math.min(bins[b], v);
+    }
+    const pct = n ? +(100 * sum / n).toFixed(sum / n >= 0.9995 ? 1 : 2) : null;
+    return { pct, bins };
+  }
+
+  function strip(bins, label) {
+    const box = el("div", "strip");
+    box.setAttribute("role", "img");
+    box.setAttribute("aria-label", `${label} availability over the selected range`);
+    const step = RANGE_SECONDS[range] / STRIP_BINS, end = Math.floor(nowS());
+    bins.forEach((v, i) => {
+      const b = el("i");
+      if (v != null) b.className = v >= 1 ? "ok" : v <= 0 ? "bad" : "part";
+      const t0 = end - RANGE_SECONDS[range] + i * step;
+      b.title = `${fmtTime(t0)} – ${fmtTime(t0 + step)}: ${v == null ? "no data" : v >= 1 ? "up" : v <= 0 ? "down" : `${Math.round(v * 100)}% up`}`;
+      box.appendChild(b);
+    });
+    return box;
   }
 
   // ------------------------------------------------------------ charts

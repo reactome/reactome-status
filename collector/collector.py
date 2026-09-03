@@ -29,7 +29,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 NOW = time.time()
 
 
@@ -228,6 +228,21 @@ LINE_RE = re.compile(
 )
 
 
+def _find_by_inode(directory, inode):
+    if not inode:
+        return None
+    try:
+        for entry in os.scandir(directory):
+            try:
+                if entry.is_file(follow_symlinks=False) and entry.stat().st_ino == inode:
+                    return entry.path
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return None
+
+
 def percentile(sorted_vals, pct):
     if not sorted_vals:
         return None
@@ -264,18 +279,36 @@ def access_log_stats(cfg, state):
 
     prev = state.get("access_log") or {}
     offset = prev.get("offset", None)
-    if offset is None or prev.get("inode") != st.st_ino or st.st_size < offset:
-        # first run or rotated: start from the current end (we cannot know the
-        # window boundary, so record nothing for this run)
-        if offset is not None and prev.get("inode") == st.st_ino:
-            offset = 0  # truncated in place: read from start
-            result["note"] = "log truncated; reading from start"
+    carry = []  # lines from the rotated-away file that still belong to this window
+    if offset is None:
+        # first run: start from the current end; nothing to report for this run
+        state["access_log"] = {"inode": st.st_ino, "offset": st.st_size, "ts": NOW}
+        result["note"] = "first run; window skipped"
+        result["window_s"] = 0
+        return result
+    if prev.get("inode") != st.st_ino:
+        # rotated: finish reading the old file (same inode, new name, not yet compressed) then start at 0
+        old_path = _find_by_inode(os.path.dirname(path), prev.get("inode"))
+        if old_path:
+            try:
+                with open(old_path, "rb") as f:
+                    f.seek(offset)
+                    carry = f.read(max_bytes).splitlines(keepends=True)
+                result["note"] = f"rotated; read {len(carry)} lines from {os.path.basename(old_path)}"
+            except OSError:
+                result["note"] = "rotated; previous file unreadable"
         else:
-            offset = st.st_size
-            result["note"] = "first run or rotated file; window skipped"
-            state["access_log"] = {"inode": st.st_ino, "offset": offset, "ts": NOW}
+            result["note"] = "rotated; previous file not found, its tail was skipped"
+        offset = 0
+        if not old_path and st.st_size > 64 * 1024 * 1024:
+            # a freshly rotated log is small; a large "new" file means our state is stale, not a rotation
+            result["note"] = "inode changed but file is large; window skipped"
+            state["access_log"] = {"inode": st.st_ino, "offset": st.st_size, "ts": NOW}
             result["window_s"] = 0
             return result
+    elif st.st_size < offset:
+        offset = 0  # truncated in place
+        result["note"] = "log truncated; reading from start"
 
     to_read = st.st_size - offset
     if to_read > max_bytes:
@@ -287,6 +320,36 @@ def access_log_stats(cfg, state):
     groups["other"] = new_group()
     codes = {}
     parsed = skipped = 0
+    def _consume(raw):
+        nonlocal parsed, skipped
+        m = LINE_RE.match(raw.decode("utf-8", "replace"))
+        if not m:
+            skipped += 1
+            return
+        parsed += 1
+        status = int(m.group("status"))
+        klass = f"s{status // 100}xx" if 2 <= status // 100 <= 5 else None
+        nbytes = int(m.group("bytes")) if m.group("bytes").isdigit() else 0
+        ms = int(m.group("ms")) if m.group("ms") else None
+        path_ = m.group("path") or ""
+        target = groups["other"]
+        for name, rx in groups_cfg:
+            if rx.search(path_):
+                target = groups[name]
+                break
+        for g in (total, target):
+            g["hits"] += 1
+            if klass:
+                g[klass] += 1
+            g["bytes"] += nbytes
+            if ms is not None:
+                g["_ms"].append(ms)
+        codes[status] = codes.get(status, 0) + 1
+
+    for raw in carry:
+        if raw.endswith(b"\n"):
+            _consume(raw)
+
     with open(path, "rb") as f:
         f.seek(offset)
         if result.get("note", "").startswith("skipped"):
@@ -295,29 +358,7 @@ def access_log_stats(cfg, state):
             if not raw.endswith(b"\n"):
                 break  # partial last line, leave for next run
             offset += len(raw)
-            m = LINE_RE.match(raw.decode("utf-8", "replace"))
-            if not m:
-                skipped += 1
-                continue
-            parsed += 1
-            status = int(m.group("status"))
-            klass = f"s{status // 100}xx" if 2 <= status // 100 <= 5 else None
-            nbytes = int(m.group("bytes")) if m.group("bytes", ).isdigit() else 0
-            ms = int(m.group("ms")) if m.group("ms") else None
-            path_ = m.group("path") or ""
-            target = groups["other"]
-            for name, rx in groups_cfg:
-                if rx.search(path_):
-                    target = groups[name]
-                    break
-            for g in (total, target):
-                g["hits"] += 1
-                if klass:
-                    g[klass] += 1
-                g["bytes"] += nbytes
-                if ms is not None:
-                    g["_ms"].append(ms)
-            codes[status] = codes.get(status, 0) + 1
+            _consume(raw)
         else:
             offset = f.tell()
 
@@ -456,16 +497,35 @@ def _weighted(pairs):
 
 # ------------------------------------------------------------------------ upload
 
-def upload(local, key, cache_control):
-    bucket = CONFIG["s3_bucket"]
-    cmd = ["aws", "s3", "cp", "--only-show-errors", local, f"s3://{bucket}/{key}",
+def s3_sync(local_dir, s3_uri, cache_control, excludes=()):
+    cmd = ["aws", "s3", "sync", "--only-show-errors", local_dir, s3_uri,
            "--content-type", "application/json", "--cache-control", cache_control]
+    for e in excludes:
+        cmd += ["--exclude", e]
     if CONFIG.get("aws_region"):
         cmd += ["--region", CONFIG["aws_region"]]
-    rc, so, se = run(cmd, timeout=60)
+    rc, so, se = run(cmd, timeout=120)
     if rc != 0:
-        log(f"upload failed for {key}: {se.strip()}")
+        log(f"upload failed for {s3_uri}: {se.strip()}")
     return rc == 0
+
+
+def prune_raw(raw_dir, keep_days=2):
+    """Local raw snapshots only need to live until they have been synced."""
+    cutoff = NOW - keep_days * 86400
+    for root, dirs, files in os.walk(raw_dir, topdown=False):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                if os.stat(fp).st_mtime < cutoff:
+                    os.remove(fp)
+            except OSError:
+                pass
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(root, d))  # only succeeds when empty
+            except OSError:
+                pass
 
 
 # -------------------------------------------------------------------------- main
@@ -532,20 +592,22 @@ def main():
         "series/90d.json": ({"host": CONFIG["host"], "step_s": 21600, "points": rollup(db, 90 * 86400, 21600)}, "max-age=1800"),
         "events.json": ({"host": CONFIG["host"], "events": all_events}, "max-age=120"),
     }
-    prefix = CONFIG["s3_prefix"].strip("/")
-    raw_prefix = CONFIG.get("s3_raw_prefix", f"raw/{CONFIG['host']}").strip("/")
-    keys = {rel: f"{prefix}/{rel}" for rel in files}
     raw_rel = datetime.fromtimestamp(NOW, tz=timezone.utc).strftime("raw/%Y/%m/%d/%H%M.json")
-    files[raw_rel] = (snap, "max-age=31536000, immutable")
-    keys[raw_rel] = f"{raw_prefix}/{raw_rel[4:]}"
-
-    for rel, (obj, cc) in files.items():
+    files[raw_rel] = (snap, None)
+    for rel, (obj, _) in files.items():
         local = os.path.join(out_dir, rel)
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "w") as f:
             json.dump(obj, f, separators=(",", ":"))
-        if not args.no_upload:
-            upload(local, keys[rel], cc)
+    prune_raw(os.path.join(out_dir, "raw"))
+
+    if not args.no_upload:
+        bucket = CONFIG["s3_bucket"]
+        prefix = CONFIG["s3_prefix"].strip("/")
+        raw_prefix = CONFIG.get("s3_raw_prefix", f"raw/{CONFIG['host']}").strip("/")
+        # two calls instead of one per file: live files (short cache) and the immutable raw archive
+        s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*"])
+        s3_sync(os.path.join(out_dir, "raw"), f"s3://{bucket}/{raw_prefix}/", "max-age=31536000, immutable")
 
     with open(state_path + ".tmp", "w") as f:
         json.dump(state, f)
