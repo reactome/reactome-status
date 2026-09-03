@@ -6,10 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=reactome-status
-Group=reactome
-SupplementaryGroups=adm
+Group=reactome-status
 StateDirectory=reactome-status
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
 Environment=HOME=/var/lib/reactome-status
 ExecStart=/usr/bin/python3 /opt/reactome-status/collector.py -c /etc/reactome-status/config.json
 Nice=10
@@ -26,3 +25,14 @@ ProtectHome=read-only
 ReadWritePaths=/var/lib/reactome-status
 PrivateTmp=yes
 NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallArchitectures=native
+UMask=0027

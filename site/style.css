@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #6b6a65;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
   --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --critical:#d03b3b;
@@ -27,6 +27,7 @@ h1 { font-size: 20px; color: var(--brand); font-weight: 500; padding-left: 14px;
 .top-right { display:flex; align-items:center; gap:16px; }
 .pill { padding:4px 12px; border-radius:999px; font-weight:600; font-size:13px; display:inline-flex; gap:6px; align-items:center; border:1px solid var(--border); }
 .pill::before { content:""; width:9px; height:9px; border-radius:50%; background:var(--muted); }
+.pill-unknown::before { background:var(--muted); }
 .pill-good::before { background:var(--good); } .pill-warn::before { background:var(--warn); } .pill-bad::before { background:var(--critical); }
 .range button { background:var(--surface); color:var(--ink); border:1px solid var(--border); padding:5px 12px; cursor:pointer; font:inherit; }
 .range button:first-child { border-radius:6px 0 0 6px; } .range button:last-child { border-radius:0 6px 6px 0; }
@@ -37,7 +38,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 40px; display:grid;
 .host { display:grid; gap:14px; }
 .host-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
 .host-meta { color:var(--ink-2); font-size:13px; }
-.banner { padding:12px 14px; border-radius:8px; border:1px solid var(--critical); background:color-mix(in srgb, var(--critical) 10%, var(--surface)); font-weight:500; }
+.banner { display:grid; gap:6px; padding:12px 14px; border-radius:8px; border:1px solid var(--critical); background:color-mix(in srgb, var(--critical) 10%, var(--surface)); font-weight:500; }
 .banner.warn { border-color:var(--warn); background:color-mix(in srgb, var(--warn) 12%, var(--surface)); }
 .cols { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px; }
 .card { background:var(--brand-tint); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }

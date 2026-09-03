@@ -42,12 +42,19 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      # versioning lets an accidental `sync --delete` or a bad upload from a host be rolled back
+      VersioningConfiguration: { Status: Enabled }
       LifecycleConfiguration:
         Rules:
           - Id: expire-raw-snapshots
             Status: Enabled
             Prefix: raw/
             ExpirationInDays: !Ref RawRetentionDays
+          - Id: expire-old-versions
+            Status: Enabled
+            Prefix: ""
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            ExpiredObjectDeleteMarker: true
           - Id: abort-incomplete-uploads
             Status: Enabled
             AbortIncompleteMultipartUpload: { DaysAfterInitiation: 2 }
@@ -101,10 +108,34 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD]
           Compress: true
-          # Managed "UseOriginCacheControlHeaders": caches for exactly as long as the Cache-Control
-          # header set on each object by the collector / deploy script.
-          CachePolicyId: 83da9c7e-98b4-4e11-a168-04f0df8e2c65
+          CachePolicyId: !Ref CachePolicy
           ResponseHeadersPolicyId: !Ref SecurityHeaders
+        CacheBehaviors:
+          # Objects under data/ and raw/ are written by the production hosts, not by this repo.
+          # Whatever a host uploads is served as inert JSON: content-type is forced by a viewer-
+          # response function and a sandboxing CSP means even an HTML upload cannot run or phish.
+          - PathPattern: "data/*"
+            TargetOriginId: s3
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref CachePolicy
+            ResponseHeadersPolicyId: !Ref DataHeaders
+            FunctionAssociations:
+              - EventType: viewer-response
+                FunctionARN: !GetAtt ForceJsonFunction.FunctionMetadata.FunctionARN
+          - PathPattern: "raw/*"
+            TargetOriginId: s3
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref CachePolicy
+            ResponseHeadersPolicyId: !Ref DataHeaders
+            FunctionAssociations:
+              - EventType: viewer-response
+                FunctionARN: !GetAtt ForceJsonFunction.FunctionMetadata.FunctionARN
         CustomErrorResponses:
           # S3 answers 403 for missing keys behind OAC; expose them as 404 and do not cache misses for long
           - { ErrorCode: 403, ResponseCode: 404, ResponsePagePath: /404.json, ErrorCachingMinTTL: 10 }
@@ -115,6 +146,51 @@ Resources:
           MinimumProtocolVersion: TLSv1.2_2021
       Tags:
         - { Key: Project, Value: reactome-status }
+
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-origin-cache-control"
+        Comment: Honour each object's Cache-Control; cache key is the path only (no cookies, headers or query strings).
+        MinTTL: 0
+        DefaultTTL: 60
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  ForceJsonFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-force-json"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Serve host-uploaded objects strictly as JSON, whatever content-type they were stored with.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var r = event.response;
+          r.headers['content-type'] = { value: 'application/json; charset=utf-8' };
+          r.headers['content-disposition'] = { value: 'inline' };
+          return r;
+        }
+
+  DataHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-data-headers"
+        Comment: Host-uploaded JSON must never execute or frame anything.
+        SecurityHeadersConfig:
+          ContentSecurityPolicy: { Override: true, ContentSecurityPolicy: "default-src 'none'; sandbox; frame-ancestors 'none'" }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { Override: true, FrameOption: DENY }
+          ReferrerPolicy: { Override: true, ReferrerPolicy: no-referrer }
+          StrictTransportSecurity: { Override: true, AccessControlMaxAgeSec: 31536000, IncludeSubdomains: false }
 
   SecurityHeaders:
     Type: AWS::CloudFront::ResponseHeadersPolicy
