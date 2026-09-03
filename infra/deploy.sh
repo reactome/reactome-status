@@ -12,14 +12,22 @@ set -euo pipefail
 DOMAIN="${DOMAIN:-status.reactome.org}"
 STACK="${STACK:-reactome-status-site}"
 REGION=us-east-1            # CloudFront certificates must live in us-east-1
-COLLECTOR_ROLE="${COLLECTOR_ROLE:-EC2CloudwatchAgentRole}"
+# COLLECTOR_ROLE may be set to "" to deploy without attaching the upload policy to any role
+COLLECTOR_ROLE="${COLLECTOR_ROLE-EC2CloudwatchAgentRole}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE="$HERE/../site"
-export AWS_DEFAULT_REGION=$REGION
+export AWS_REGION=$REGION AWS_DEFAULT_REGION=$REGION   # AWS_REGION takes precedence in CLI v2
 
 cert_arn() {
-  aws acm list-certificates --certificate-statuses ISSUED PENDING_VALIDATION \
-    --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn | [0]" --output text
+  # prefer an ISSUED certificate; fall back to a pending one only so `cert` can print its record
+  local arn
+  arn=$(aws acm list-certificates --certificate-statuses ISSUED \
+          --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn | [0]" --output text)
+  if [[ "$arn" == "None" || -z "$arn" ]]; then
+    arn=$(aws acm list-certificates --certificate-statuses PENDING_VALIDATION \
+            --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn | [0]" --output text)
+  fi
+  echo "$arn"
 }
 
 case "${1:-}" in
@@ -40,7 +48,7 @@ case "${1:-}" in
     status=$(aws acm describe-certificate --certificate-arn "$arn" --query Certificate.Status --output text)
     [[ "$status" == "ISSUED" ]] || { echo "certificate $arn is $status, not ISSUED"; exit 1; }
     aws cloudformation deploy --stack-name "$STACK" --template-file "$HERE/status-site.yaml" \
-      --capabilities CAPABILITY_NAMED_IAM \
+      --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
       --parameter-overrides DomainName="$DOMAIN" CertificateArn="$arn" CollectorRoleName="$COLLECTOR_ROLE" \
       --tags Project=reactome-status
     "$0" outputs
@@ -50,6 +58,7 @@ case "${1:-}" in
     aws s3 sync "$SITE/" "s3://$DOMAIN/" --delete \
       --exclude "data/*" --exclude "raw/*" --exclude "vendor/*" \
       --cache-control "max-age=300" --only-show-errors
+    # vendor files live under a versioned directory (site/vendor/<lib>-<version>/), so immutable is safe
     aws s3 sync "$SITE/vendor/" "s3://$DOMAIN/vendor/" \
       --cache-control "max-age=31536000, immutable" --only-show-errors
     dist=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)

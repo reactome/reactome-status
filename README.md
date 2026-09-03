@@ -12,7 +12,7 @@ does not, and a missing report *is* the outage signal.
 
 | Path | What |
 |---|---|
-| `collector/collector.py` | Stdlib-only Python 3 collector. systemd units, Docker containers, HTTP/TCP health checks, Apache `mod_status`, access-log aggregates, host load/memory/disk, restart detection. Uploads with the AWS CLI. |
+| `collector/collector.py` | Stdlib-only Python 3 collector. systemd units, HTTP/TCP health checks, Apache `mod_status`, access-log aggregates, host load/memory/disk, restart detection. Uploads with the AWS CLI. (Docker container checks exist in the code but are unused: the collector deliberately has no Docker socket access; containers are checked over HTTP/TCP instead.) |
 | `collector/config/<host>.json` | Per-host configuration (what to check, log path, S3 prefix). |
 | `collector/*.service`, `*.timer`, `install.sh` | systemd units and the sudo install script. |
 | `site/` | The static page: `index.html`, `app.js`, `style.css`, vendored [uPlot](https://github.com/leeoniya/uPlot), `hosts.json` (list of hosts shown). |
@@ -55,10 +55,12 @@ git clone https://github.com/reactome/reactome-status.git
 sudo reactome-status/collector/install.sh reactome-status/collector/config/reactome.org.json
 ```
 
-This creates a `reactome-status` system user (groups `reactome` and `adm` for log
-access; deliberately not `docker`, which would be root-equivalent), installs the script under `/opt/reactome-status`, the config
-under `/etc/reactome-status`, state under `/var/lib/reactome-status`, and enables a
-timer that runs at every 5-minute mark. Check with:
+This creates a `reactome-status` system user with its own group, grants it read access to the
+Apache log directory with a narrow ACL (not group membership, which would also expose other
+group-readable files such as CMS credentials; deliberately not `docker` either, which would be
+root-equivalent), installs the script under `/opt/reactome-status`, the config under
+`/etc/reactome-status`, state under `/var/lib/reactome-status`, and enables a timer that runs at
+minutes 1, 6, 11, … past the hour (deliberately off the :00/:30 marks that cron jobs use). Check with:
 
 ```bash
 systemctl list-timers reactome-status-collector.timer

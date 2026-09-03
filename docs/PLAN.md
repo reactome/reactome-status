@@ -5,19 +5,20 @@ uptime and traffic statistics for production services, fed by a collector that r
 on each production host and pushes a snapshot to S3 every 5 minutes. The page keeps
 working when a host is down; a stale snapshot *is* the down signal.
 
-## What is on production-host today (surveyed 2026-09-02, read-only)
+## Survey of the production host
 
-| (host survey table removed from the public history) |
+The initial survey of production-host (services, ports, log locations, tooling) informed the
+design below but is kept out of this public repository; see the internal notes.
 
 ## Architecture
 
 ```
- production-host ─┐   every 5 min            ┌─ S3 bucket (private) ─┐   CloudFront + ACM   status.reactome.org
- curator (later)─┼─ collector.py ─ PutObject ─▶ data/<host>/latest.json  ├──────────────────▶  static HTML/JS
- other hosts    ─┘                          │  data/<host>/hourly.json   │  (OAC, no public S3)
-                                            │  data/<host>/YYYY/MM/DD/HHMM.json
-                                            │  site/index.html, app.js  │
-                                            └───────────────────────────┘
+ production-host ─┐   every 5 min            ┌─ S3 bucket (private) ──────┐   CloudFront + ACM   status.reactome.org
+ curator (later)─┼─ collector.py ─ s3 sync ─▶ data/<host>/latest.json     ├──────────────────▶  static HTML/JS
+ other hosts    ─┘                          │  data/<host>/series/{24h,7d,90d}.json, events.json
+                                            │  raw/<host>/YYYY/MM/DD/HHMM.json (90-day lifecycle)
+                                            │  index.html, app.js, vendor/ │  (OAC, no public S3)
+                                            └────────────────────────────┘
 ```
 
 ### 1. Collector (runs on each host)
@@ -32,15 +33,15 @@ Collected each run:
 - **Access log window** (last 5 min, read from a saved byte offset so the 530 MB file is never re-read; rotation-safe): hits, 2xx/3xx/4xx/5xx counts, p50/p95 response time, bytes — bucketed by service prefix (/ContentService, /AnalysisService, /PathwayBrowser, /content, /chat, other). Aggregates only; no IPs or user agents ever leave the host.
 - **Host**: load, memory, swap, disk, uptime, boot time.
 
-Output: one JSON snapshot. Uploaded as `latest.json` (Cache-Control 60 s), an immutable
-timestamped copy, and a rolling `hourly.json`/`daily.json` (last 7 d / 90 d of
-downsampled points) so the browser fetches 2–3 files, not hundreds.
+Output: one JSON snapshot. Uploaded as `latest.json`, an immutable timestamped copy under
+`raw/`, rolling `series/24h.json`, `series/7d.json`, `series/90d.json` and `events.json`, so
+the browser fetches a handful of files, not hundreds. See README.md for the authoritative layout.
 
 ### 2. Storage / delivery
 - Private S3 bucket, CloudFront with Origin Access Control, ACM certificate in us-east-1.
 - Cloudflare: DNS-only (grey cloud) CNAME `status` → CloudFront domain, plus the ACM validation CNAME.
 - S3 lifecycle: expire 5-min snapshots after 90 days; keep rollups.
-- IAM: add a policy to `EC2CloudwatchAgentRole` (or a new role per host) allowing `s3:PutObject` on `data/<host>/*` only.
+- IAM: a policy on the hosts' instance role allowing `s3:PutObject` under `data/*` and `raw/*` (shared by all hosts using that role; a dedicated per-host role would tighten this). CloudFront serves those prefixes as inert JSON regardless of what was uploaded.
 - Infra defined as one CloudFormation template (or Terraform if you already use it) checked into this repo.
 
 ### 3. Frontend (static)

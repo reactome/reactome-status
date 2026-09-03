@@ -29,8 +29,9 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.3.2"
+VERSION = "0.4.0"
 NOW = time.time()
+STATE = {}   # previous run's state, loaded in main()
 
 
 def log(msg):
@@ -110,6 +111,14 @@ def systemd_units(units):
                 break
             time.sleep(5)
             props = _unit_props(u)
+        if not props:
+            # systemctl itself failed (timeout, D-Bus hiccup): report unknown rather than an outage,
+            # keeping the previously known start time so no false restart is recorded later
+            prev = (STATE.get("services") or {}).get(u) or {}
+            out[u] = {"type": "systemd", "state": "unknown", "sub": "", "up": bool(prev.get("up", True)),
+                      "since": prev.get("since"), "restarts": 0, "unknown": True}
+            log(f"systemctl show {u} failed; carrying previous state forward")
+            continue
         since = props.get("ExecMainStartTimestamp") or props.get("ActiveEnterTimestamp") or ""
         out[u] = {
             "type": "systemd",
@@ -125,6 +134,8 @@ def systemd_units(units):
 def _unit_props(unit):
     rc, so, _ = run(["systemctl", "show", unit, "-p",
                      "ActiveState,SubState,ActiveEnterTimestamp,ExecMainStartTimestamp,NRestarts"])
+    if rc != 0:
+        return {}
     return dict(line.split("=", 1) for line in so.splitlines() if "=" in line)
 
 
@@ -245,12 +256,51 @@ def apache_status(url):
 
 # --------------------------------------------------------------------- access log
 
-# Default matches Reactome's "combined_format":
+# Reactome's "combined_format":
 # %a %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i" "%{CONTENT-LENGTH}i" "%{cookie}n" %I %{ms}T
-LINE_RE = re.compile(
-    r'^\S+ \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<method>\S+)?\s?(?P<path>\S*)[^"]*" (?P<status>\d{3}) (?P<bytes>\S+)'
-    r'(?:.* (?P<in>\d+) (?P<ms>\d+))?\s*$'
-)
+# Parsed with a linear scan rather than a regex: the request line is client-controlled and a
+# backtracking regex could be made to take tens of seconds per line (ReDoS); the scan also
+# honours Apache's escaping so an embedded \" cannot spoof the status or size fields.
+MAX_LINE_BYTES = 16 * 1024
+
+
+def parse_line(line):
+    """Return (path, status, bytes, ms) or None if the line is not in the expected format."""
+    if len(line) > MAX_LINE_BYTES:
+        return None
+    i = line.find('] "')
+    if i < 0:
+        return None
+    j = i + 3                      # first char of the request line
+    n = len(line)
+    k = j
+    while k < n:                    # find the closing quote, skipping backslash escapes
+        c = line[k]
+        if c == "\\":
+            k += 2
+            continue
+        if c == '"':
+            break
+        k += 1
+    if k >= n:
+        return None
+    req = line[j:k]
+    rest = line[k + 1:].split(" ", 3)      # ['', status, bytes, remainder]
+    if len(rest) < 3 or rest[0] != "":
+        return None
+    status_s, bytes_s = rest[1], rest[2]
+    if len(status_s) != 3 or not (status_s.isascii() and status_s.isdigit()):
+        return None
+    status = int(status_s)
+    nbytes = int(bytes_s) if (bytes_s.isascii() and bytes_s.isdigit()) else 0
+    # %I and %{ms}T are the last two server-generated fields
+    tail = line.rstrip("\n").rsplit(" ", 2)
+    ms = None
+    if len(tail) == 3 and tail[2].isascii() and tail[2].isdigit() and tail[1].isascii() and tail[1].isdigit():
+        ms = int(tail[2])
+    parts = req.split(" ", 2)
+    path = parts[1] if len(parts) >= 2 else ""
+    return path, status, nbytes, ms
 
 
 def _find_by_inode(directory, inode):
@@ -300,11 +350,12 @@ def access_log_stats(cfg, state):
     try:
         st = os.stat(path)
     except OSError as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {path}"}
+        log(f"access log unreadable: {path}: {e}")
+        return {"ok": False, "error": type(e).__name__}
 
     prev = state.get("access_log") or {}
     offset = prev.get("offset", None)
-    carry = []  # lines from the rotated-away file that still belong to this window
+    carry_path, carry_offset = None, 0  # rotated-away file whose tail still belongs to this window
     if offset is None:
         # first run: start from the current end; nothing to report for this run
         state["access_log"] = {"inode": st.st_ino, "offset": st.st_size, "ts": NOW}
@@ -314,23 +365,25 @@ def access_log_stats(cfg, state):
     if prev.get("inode") != st.st_ino:
         # rotated: finish reading the old file (same inode, new name, not yet compressed) then start at 0
         old_path = _find_by_inode(os.path.dirname(path), prev.get("inode"))
-        if old_path:
-            try:
-                with open(old_path, "rb") as f:
-                    f.seek(offset)
-                    carry = f.read(max_bytes).splitlines(keepends=True)
-                result["note"] = f"rotated; read {len(carry)} lines from {os.path.basename(old_path)}"
-            except OSError:
-                result["note"] = "rotated; previous file unreadable"
-        else:
-            result["note"] = "rotated; previous file not found, its tail was skipped"
-        offset = 0
-        if not old_path and st.st_size > 64 * 1024 * 1024:
+        if st.st_size > 64 * 1024 * 1024:
             # a freshly rotated log is small; a large "new" file means our state is stale, not a rotation
             result["note"] = "inode changed but file is large; window skipped"
             state["access_log"] = {"inode": st.st_ino, "offset": st.st_size, "ts": NOW}
             result["window_s"] = 0
             return result
+        # only trust a same-directory sibling that is at least as long as where we left off
+        if old_path and os.path.basename(old_path).startswith(os.path.basename(path)):
+            try:
+                if os.stat(old_path).st_size >= offset:
+                    carry_path, carry_offset = old_path, offset
+                    result["note"] = "rotated; finished reading the previous file"
+                else:
+                    result["note"] = "rotated; previous file shorter than expected, its tail was skipped"
+            except OSError:
+                result["note"] = "rotated; previous file unreadable"
+        else:
+            result["note"] = "rotated; previous file not found, its tail was skipped"
+        offset = 0
     elif st.st_size < offset:
         offset = 0  # truncated in place
         result["note"] = "log truncated; reading from start"
@@ -347,16 +400,16 @@ def access_log_stats(cfg, state):
     parsed = skipped = 0
     def _consume(raw):
         nonlocal parsed, skipped
-        m = LINE_RE.match(raw.decode("utf-8", "replace"))
-        if not m:
+        try:
+            parsed_line = parse_line(raw.decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - a single odd line must never take the run down
+            parsed_line = None
+        if parsed_line is None:
             skipped += 1
             return
         parsed += 1
-        status = int(m.group("status"))
+        path_, status, nbytes, ms = parsed_line
         klass = f"s{status // 100}xx" if 2 <= status // 100 <= 5 else None
-        nbytes = int(m.group("bytes")) if m.group("bytes").isdigit() else 0
-        ms = int(m.group("ms")) if m.group("ms") else None
-        path_ = m.group("path") or ""
         target = groups["other"]
         for name, rx in groups_cfg:
             if rx.search(path_):
@@ -371,21 +424,29 @@ def access_log_stats(cfg, state):
                 g["_ms"].append(ms)
         codes[status] = codes.get(status, 0) + 1
 
-    for raw in carry:
-        if raw.endswith(b"\n"):
-            _consume(raw)
+    try:
+        if carry_path:
+            with open(carry_path, "rb") as f:   # streamed, never loaded whole
+                f.seek(carry_offset)
+                budget = max_bytes
+                for raw in f:
+                    budget -= len(raw)
+                    if budget < 0 or not raw.endswith(b"\n"):
+                        break
+                    _consume(raw)
 
-    with open(path, "rb") as f:
-        f.seek(offset)
-        if result.get("note", "").startswith("skipped"):
-            f.readline()  # discard partial line
-        for raw in f:
-            if not raw.endswith(b"\n"):
-                break  # partial last line, leave for next run
-            offset += len(raw)
-            _consume(raw)
-        else:
-            offset = f.tell()
+        with open(path, "rb") as f:
+            f.seek(offset)
+            if result.get("note", "").startswith("skipped"):
+                offset += len(f.readline())  # discard the partial line we landed in
+            for raw in f:
+                if not raw.endswith(b"\n"):
+                    break  # partial last line, leave for next run
+                offset += len(raw)
+                _consume(raw)
+    except OSError as e:
+        log(f"access log read failed: {e}")
+        return {"ok": False, "error": type(e).__name__}
 
     state["access_log"] = {"inode": st.st_ino, "offset": offset, "ts": NOW}
     result["window_s"] = int(NOW - prev.get("ts", NOW)) if prev.get("ts") else None
@@ -413,6 +474,7 @@ def detect_restarts(services, probes, state, events):
             if old is not None and not old.get("up"):
                 events.append({"ts": iso(NOW), "service": name, "kind": "healthy", "started_at": svc.get("since"),
                                "healthy_within_s": None, "note": "back up after an outage"})
+            pending.pop(name, None)
             continue
         if old is not None and svc.get("since") and old.get("since") != svc["since"]:
             ev = {"ts": iso(NOW), "service": name, "kind": "restart",
@@ -580,11 +642,13 @@ def main():
     out_dir = os.path.join(state_dir, "out")
     os.makedirs(os.path.join(out_dir, "series"), exist_ok=True)
     state_path = os.path.join(state_dir, "state.json")
+    global STATE
     try:
         with open(state_path) as f:
             state = json.load(f)
     except (OSError, ValueError):
         state = {}
+    STATE = state
 
     services = {}
     services.update(systemd_units(CONFIG.get("systemd_units", [])))
@@ -608,6 +672,12 @@ def main():
 
     events = []
     detect_restarts(services, probes, state, events)
+
+    # persist the log offset and service state now, before anything that could be slow or fail:
+    # a killed run must never re-count the same log window
+    with open(state_path + ".tmp", "w") as f:
+        json.dump(state, f)
+    os.replace(state_path + ".tmp", state_path)
     # everything below is published on a public page: keep only what a reader needs
     for pr in snap["probes"].values():
         pr["kind"] = "tcp" if "port" in pr else "http"
@@ -649,26 +719,24 @@ def main():
             json.dump(obj, f, separators=(",", ":"))
     prune_raw(os.path.join(out_dir, "raw"))
 
-    # persist the log offset and service state *before* uploading: if the upload hangs and the
-    # run is killed, the next run must not re-count the same log window
-    with open(state_path + ".tmp", "w") as f:
-        json.dump(state, f)
-    os.replace(state_path + ".tmp", state_path)
-
+    upload_ok = True
     if not args.no_upload:
         bucket = CONFIG["s3_bucket"]
         prefix = CONFIG["s3_prefix"].strip("/")
         raw_prefix = CONFIG.get("s3_raw_prefix", f"raw/{CONFIG['host']}").strip("/")
         # two calls instead of one per file: live files (short cache) and the immutable raw archive
-        s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*"])
-        s3_sync(os.path.join(out_dir, "raw"), f"s3://{bucket}/{raw_prefix}/", "max-age=31536000, immutable")
+        upload_ok = s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*"])
+        upload_ok = s3_sync(os.path.join(out_dir, "raw"), f"s3://{bucket}/{raw_prefix}/", "max-age=31536000, immutable") and upload_ok
 
     if args.print:
         json.dump(snap, sys.stdout, indent=2)
         print()
     log(f"done: ok={snap['ok']} services={sum(s['up'] for s in services.values())}/{len(services)} "
         f"probes={sum(p['ok'] for p in probes.values())}/{len(probes)} "
-        f"log_hits={(snap['access_log'] or {}).get('total', {}).get('hits')}")
+        f"log_hits={(snap['access_log'] or {}).get('total', {}).get('hits')}"
+        + ("" if upload_ok else " UPLOAD FAILED"))
+    if not upload_ok:
+        sys.exit(1)   # make the failure visible in systemctl status / journal
 
 
 if __name__ == "__main__":
