@@ -29,7 +29,7 @@
     if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
     return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
   };
-  const fmtAgo = (ts) => ts == null ? "–" : `${fmtDur(nowS() - ts)} ago`;
+  const fmtAgo = (ts) => ts == null ? "–" : `${fmtDur(Math.max(0, nowS() - ts))} ago`;
   const fmtBytes = (b) => b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(0)} GB` : `${(b / 1e6).toFixed(0)} MB`;
   const fmtMs = (v) => v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`;
 
@@ -100,7 +100,7 @@
 
     // staleness — the "host is down" signal
     const gen = parseTs(latest.generated_at);
-    const age = nowS() - gen;
+    const age = Math.max(0, nowS() - gen);
     $(".host-meta", sec).textContent = `Last report ${fmtAgo(gen)} · ${fmtTime(gen)}`;
     const banner = $(".banner", sec);
     if (age > STALE_BAD_S) {
@@ -116,6 +116,8 @@
     // services, with uptime over the selected range
     const ul = $(".services", sec);
     const pts = d.series?.points || [];
+    state.step = d.series?.step_s || 300;
+    state.interval = latest.interval_seconds || 300;
     for (const [name, s] of Object.entries(latest.services || {})) {
       const li = el("li");
       const dot = el("span", `dot ${s.up ? "up" : "down"}`);
@@ -124,7 +126,7 @@
       const box = el("div", "svc");
       const row = el("div", "svc-row");
       row.append(el("span", null, name));
-      const right = el("span", "since", s.up ? `up ${fmtDur(nowS() - parseTs(s.since))}${s.restarts ? ` · ${s.restarts} restarts` : ""} · ` : `${s.state} · `);
+      const right = el("span", "since", s.up ? `up ${fmtDur(Math.max(0, nowS() - parseTs(s.since)))}${s.restarts ? ` · ${s.restarts} restarts` : ""} · ` : `${s.state} · `);
       right.append(el("span", "pct", up.pct == null ? "–" : `${up.pct}%`));
       row.append(right);
       box.append(row, strip(up.bins, name));
@@ -139,7 +141,7 @@
       const tr = el("tr");
       const st = el("span", "state");
       st.append(el("span", `dot ${p.ok ? "up" : "down"}`), document.createTextNode(p.ok ? "OK" : "Failing"));
-      const detail = p.error ? p.error : p.status ? `HTTP ${p.status}${p.body ? ` · database v${p.body}` : ""}` : p.port ? `tcp/${p.port}` : "";
+      const detail = p.error ? `failed (${p.error})` : p.status ? `HTTP ${p.status}${p.body ? ` · database v${p.body}` : ""}` : p.kind === "tcp" || p.port ? "port responds" : "";
       const up = uptime(pts, q => q.probe_ok?.[name]);
       tr.append(el("td", null, name), el("td")); tr.lastChild.appendChild(st);
       tr.append(el("td", "num", fmtMs(p.ms)), el("td", "num", up.pct == null ? "–" : `${up.pct}%`), el("td", "muted", detail));
@@ -155,7 +157,7 @@
       ["Memory used", host.mem_used_pct != null ? `${host.mem_used_pct}% of ${fmtBytes(host.mem_total)}` : "–"],
       ["Disk used (/)", host.disks?.["/"] ? `${host.disks["/"].used_pct}% of ${fmtBytes(host.disks["/"].total)}` : "–"],
       ["Server up since", host.boot_time ? `${fmtTime(parseTs(host.boot_time))} (${fmtDur(host.uptime_s)})` : "–"],
-      ["Apache", ap.ok ? `${ap.version || ""} · ${ap.req_per_sec?.toFixed(1)} req/s · ${ap.busy_workers} busy / ${ap.idle_workers} idle workers · up ${fmtDur(ap.uptime_s)}` : "not reachable"],
+      ["Apache", ap.ok ? `${ap.req_per_sec?.toFixed(1)} req/s · ${ap.busy_workers} busy / ${ap.idle_workers} idle workers · up ${fmtDur(ap.uptime_s)}` : "not reachable"],
       ["Requests, last interval", lg.total ? `${lg.total.hits} (${lg.total.s5xx} server errors, p95 ${fmtMs(lg.total.p95_ms)})` : "–"],
     ];
     for (const [k, v] of rows) { dl.append(el("dt", null, k), el("dd", null, v)); }
@@ -188,19 +190,32 @@
 
   // ------------------------------------------------------------ uptime
   const STRIP_BINS = 60;
-  /** pct = mean availability over the loaded series; bins = worst value per time slice of the selected range. */
+  /** Availability over the selected range. Every expected sample between the first one we have and
+   *  now counts; a missing sample (host not reporting) counts as DOWN. Time before the first sample
+   *  counts as no data. bins = worst value per time slice for the strip. */
   function uptime(points, pick) {
     const span = RANGE_SECONDS[range], end = Math.floor(nowS()), start = end - span;
+    const step = state.step || 300;
     const bins = new Array(STRIP_BINS).fill(null);
-    let sum = 0, n = 0;
-    for (const p of points) {
+    const have = points.filter(p => pick(p) != null && p.t >= start);
+    if (!have.length) return { pct: null, bins };
+    let sum = 0;
+    for (const p of have) {
       const v = pick(p);
-      if (v == null) continue;
-      sum += v; n++;
+      sum += v * (p.n || 1);                              // rolled-up points carry n original samples
       const b = Math.min(STRIP_BINS - 1, Math.max(0, Math.floor((p.t - start) / span * STRIP_BINS)));
       bins[b] = bins[b] == null ? v : Math.min(bins[b], v);
     }
-    const pct = n ? +(100 * sum / n).toFixed(sum / n >= 0.9995 ? 1 : 2) : null;
+    // expected samples from the first one we have until now (minus one interval of grace for the run in progress)
+    const first = have[0].t;
+    const expected = Math.max(1, Math.floor((end - first) / (state.interval || 300)));
+    const observed = have.reduce((a, p) => a + (p.n || 1), 0);
+    const ratio = Math.min(1, sum / Math.max(expected, observed));
+    // strip slices after the first sample with no data at all were outages of the whole host
+    const firstBin = Math.floor((first - start) / span * STRIP_BINS);
+    const lastBin = Math.floor((end - step * 2 - start) / span * STRIP_BINS);
+    for (let b = firstBin + 1; b <= lastBin && b < STRIP_BINS; b++) if (bins[b] == null) bins[b] = 0;
+    const pct = +(100 * ratio).toFixed(ratio >= 0.9995 ? 1 : 2);
     return { pct, bins };
   }
 
@@ -213,7 +228,7 @@
       const b = el("i");
       if (v != null) b.className = v >= 1 ? "ok" : v <= 0 ? "bad" : "part";
       const t0 = end - RANGE_SECONDS[range] + i * step;
-      b.title = `${fmtTime(t0)} – ${fmtTime(t0 + step)}: ${v == null ? "no data" : v >= 1 ? "up" : v <= 0 ? "down" : `${Math.round(v * 100)}% up`}`;
+      b.title = `${fmtTime(t0)} – ${fmtTime(t0 + step)}: ${v == null ? "no data" : v >= 1 ? "up" : v <= 0 ? "down or not reporting" : `${Math.round(v * 100)}% up`}`;
       box.appendChild(b);
     });
     return box;
@@ -234,7 +249,7 @@
     chart(container, "Responses by HTTP status class", "Requests per minute, all services", t,
       [["2xx", 1], ["3xx", 2], ["4xx", 3], ["5xx", 4]].map(([label, idx], i) => ({ label, color: C[i], data: pts.map(p => perMin(p, "_total", idx)) })), { unit: "/min" });
 
-    chart(container, "Response time, 95th percentile", "Apache-measured time to serve, by service", t,
+    chart(container, "Response time, 95th percentile", range === "24h" ? "Apache-measured time to serve, by service" : "Apache-measured; hit-weighted mean of 5-minute p95 values", t,
       groups.map((g, i) => ({ label: g, color: C[i % 8], data: pts.map(p => p?.log?.[g] ? p.log[g][6] : null) })), { unit: "ms", fmt: fmtMs });
 
     const probes = [...new Set(pts.flatMap(p => p ? Object.keys(p.probe_ms || {}) : []))];

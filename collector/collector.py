@@ -29,7 +29,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 NOW = time.time()
 
 
@@ -43,7 +43,8 @@ def iso(ts):
 
 def run(cmd, timeout=20):
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        env = {**os.environ, "TZ": "UTC", "LC_ALL": "C"}  # systemctl prints timestamps in TZ; keep them UTC
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode, p.stdout, p.stderr
     except (OSError, subprocess.TimeoutExpired) as e:
         return 255, "", str(e)
@@ -396,7 +397,12 @@ def detect_restarts(services, probes, state, events):
     for name, svc in services.items():
         old = prev.get(name)
         if name in expected and svc.get("up"):
-            continue  # scheduled restarts (e.g. Apache's half-hourly cron) are not events
+            # scheduled restarts (e.g. Apache's half-hourly cron) are not events, but a recovery
+            # after a recorded outage still is, so "went down" always gets its closing entry
+            if old is not None and not old.get("up"):
+                events.append({"ts": iso(NOW), "service": name, "kind": "healthy", "started_at": svc.get("since"),
+                               "healthy_within_s": None, "note": "back up after an outage"})
+            continue
         if old is not None and svc.get("since") and old.get("since") != svc["since"]:
             ev = {"ts": iso(NOW), "service": name, "kind": "restart",
                   "started_at": svc["since"], "previous_start": old.get("since")}
@@ -520,7 +526,7 @@ def s3_sync(local_dir, s3_uri, cache_control, excludes=()):
         cmd += ["--exclude", e]
     if CONFIG.get("aws_region"):
         cmd += ["--region", CONFIG["aws_region"]]
-    rc, so, se = run(cmd, timeout=120)
+    rc, so, se = run(cmd, timeout=60)
     if rc != 0:
         log(f"upload failed for {s3_uri}: {se.strip()}")
     return rc == 0
@@ -589,6 +595,15 @@ def main():
 
     events = []
     detect_restarts(services, probes, state, events)
+    # everything below is published on a public page: keep only what a reader needs
+    for pr in snap["probes"].values():
+        pr["kind"] = "tcp" if "port" in pr else "http"
+        for k in ("url", "host", "port"):
+            pr.pop(k, None)
+    if snap.get("apache"):
+        snap["apache"].pop("version", None)
+    if snap.get("access_log"):
+        snap["access_log"].pop("path", None)
 
     db = db_connect(os.path.join(state_dir, "points.sqlite"))
     with db:
@@ -617,6 +632,12 @@ def main():
             json.dump(obj, f, separators=(",", ":"))
     prune_raw(os.path.join(out_dir, "raw"))
 
+    # persist the log offset and service state *before* uploading: if the upload hangs and the
+    # run is killed, the next run must not re-count the same log window
+    with open(state_path + ".tmp", "w") as f:
+        json.dump(state, f)
+    os.replace(state_path + ".tmp", state_path)
+
     if not args.no_upload:
         bucket = CONFIG["s3_bucket"]
         prefix = CONFIG["s3_prefix"].strip("/")
@@ -624,10 +645,6 @@ def main():
         # two calls instead of one per file: live files (short cache) and the immutable raw archive
         s3_sync(out_dir, f"s3://{bucket}/{prefix}/", "max-age=60", excludes=["raw/*"])
         s3_sync(os.path.join(out_dir, "raw"), f"s3://{bucket}/{raw_prefix}/", "max-age=31536000, immutable")
-
-    with open(state_path + ".tmp", "w") as f:
-        json.dump(state, f)
-    os.replace(state_path + ".tmp", state_path)
 
     if args.print:
         json.dump(snap, sys.stdout, indent=2)

@@ -14,7 +14,8 @@ Environment=HOME=/var/lib/reactome-status
 ExecStart=/usr/bin/python3 /opt/reactome-status/collector.py -c /etc/reactome-status/config.json
 Nice=10
 IOSchedulingClass=idle
-TimeoutStartSec=240
+# worst case: 6 units x 20 s settling + probe timeouts + 2 x 60 s upload
+TimeoutStartSec=280
 # hard caps: the collector must never compete with production services
 CPUQuota=50%
 MemoryMax=512M
