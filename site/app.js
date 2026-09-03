@@ -6,8 +6,10 @@
   const REFRESH_MS = 60_000;
   const FETCH_TIMEOUT_MS = 20_000;
   const RANGE_SECONDS = { "24h": 86400, "7d": 7 * 86400, "90d": 90 * 86400 };
-  const STALE_WARN_S = 7 * 60;     // collector runs every 5 min
-  const STALE_BAD_S = 12 * 60;
+  // staleness thresholds relative to the host's reporting interval (5 min by default): warn after
+  // one missed report plus slack, "down" after two
+  const staleWarn = (interval) => interval + 120;
+  const staleBad = (interval) => 2 * interval + 120;
   const STRIP_BINS = 60;
   // fixed colour slot per log group so a colour always means the same service; unknown groups follow
   const GROUP_ORDER = ["ContentService", "AnalysisService", "PathwayBrowser", "RESTfulAPI", "Website", "Chatbot", "other"];
@@ -142,7 +144,7 @@
         const b = $(".banner", sec); b.hidden = false; b.classList.add("warn");
         b.textContent = `The data for ${h.name} could not be displayed (${e.message}). The collector may be publishing an unexpected format.`;
         $(".charts", sec).replaceChildren();
-        sec.dataset.status = "warn";
+        sec.dataset.status = "bad";   // an undisplayable host must not read as merely degraded
       }
       sec.dataset.host = h.name;
       sections.push(sec);
@@ -178,26 +180,28 @@
     }
 
     // staleness — the "host is down" signal. An unparsable timestamp is treated as stale, not as fine.
-    const gen = parseTs(latest.generated_at);
+    const interval = finite(latest.interval_seconds) && latest.interval_seconds >= 60 && latest.interval_seconds <= 3600 ? latest.interval_seconds : 300;
+    let gen = parseTs(latest.generated_at);
+    if (gen != null && gen > nowS() + 120) gen = null;            // a timestamp from the future is not "fresh"
     const age = gen == null ? Infinity : Math.max(0, nowS() - gen);
     updateMeta(sec, d);
     if (d.stale) { warn(`This page could not refresh (${d.error}); showing the last data received at ${fmtTime(d.fetchedAt)}.`); status = "warn"; }
-    if (age > STALE_BAD_S) {
+    if (age > staleBad(interval)) {
       warn(gen == null ? `The last report from ${h.name} has no readable timestamp.`
         : `No report from ${h.name} since ${fmtTime(gen)} (${fmtDur(age)} ago). The server or its collector is probably down; the details below are from the last report received.`, "bad");
       status = "bad";
-    } else if (age > STALE_WARN_S) {
-      warn(`The last report from ${h.name} is ${fmtDur(age)} old; a report is expected every ${fmtDur(latest.interval_seconds || 300)}.`);
+    } else if (age > staleWarn(interval)) {
+      warn(`The last report from ${h.name} is ${fmtDur(age)} old; a report is expected every ${fmtDur(interval)}.`);
       status = "warn";
     }
-    const hostFresh = age <= STALE_WARN_S;
+    const hostFresh = age <= staleWarn(interval);
 
     // uptime context for this host and range
     const pts = Array.isArray(d.series?.points) ? d.series.points : [];
     const seriesGen = finite(d.series?.generated) ? d.series.generated : null;
     const ctx = {
       span: RANGE_SECONDS[range], step: finite(d.series?.step_s) ? d.series.step_s : 300,
-      interval: finite(latest.interval_seconds) ? latest.interval_seconds : 300, hostFresh, seriesGen,
+      interval, hostFresh, seriesGen,
     };
     if (hostFresh && seriesGen != null && nowS() - seriesGen > 2 * ctx.step + 900) {
       warn(`The ${range} history file was last updated ${fmtDur(nowS() - seriesGen)} ago although the host is reporting; charts and uptime for this range may lag.`);
@@ -206,12 +210,18 @@
 
     // services
     const ul = $(".services", sec);
-    const services = latest.services && typeof latest.services === "object" ? latest.services : {};
+    const objects = (o) => Object.entries(o && typeof o === "object" ? o : {}).filter(([, v]) => v && typeof v === "object");
+    const services = Object.fromEntries(objects(latest.services));
+    const probesObj = Object.fromEntries(objects(latest.probes));
+    if (!Object.keys(services).length && !Object.keys(probesObj).length) {
+      warn(`The last report from ${h.name} contains no service or health-check results.`);
+      status = "warn";
+    }
     for (const [name, s] of Object.entries(services)) {
       const li = el("li");
       const dot = el("span", `dot ${s.up ? "up" : "down"}`);
       dot.title = `${s.state || "unknown"}${s.sub ? ` (${s.sub})` : ""}${s.unknown ? " — state could not be read this run" : ""}`;
-      const up = uptime(ctx, pts, p => p.svc?.[name]);
+      const up = uptime(ctx, pts, p => p.svc?.[name], p => p.svc_n?.[name]);
       const box = el("div", "svc");
       const row = el("div", "svc-row");
       row.append(el("span", null, name));
@@ -228,13 +238,12 @@
 
     // probes
     const tb = $(".probes tbody", sec);
-    const probes = latest.probes && typeof latest.probes === "object" ? latest.probes : {};
-    for (const [name, p] of Object.entries(probes)) {
+    for (const [name, p] of Object.entries(probesObj)) {
       const tr = el("tr");
       const st = el("span", "state");
       st.append(el("span", `dot ${p.ok ? "up" : "down"}`), document.createTextNode(p.ok ? "OK" : "Failing"));
       const detail = p.error ? `failed (${p.error})` : p.status ? `HTTP ${p.status}${p.body ? ` · database v${p.body}` : ""}` : p.kind === "tcp" || p.port ? "port responds" : "";
-      const up = uptime(ctx, pts, q => q.probe_ok?.[name]);
+      const up = uptime(ctx, pts, q => q.probe_ok?.[name], q => q.probe_n?.[name]);
       tr.append(el("td", null, name), el("td")); tr.lastChild.appendChild(st);
       tr.append(el("td", "num", fmtMs(p.ms)), el("td", "num", fmtPct(up.ratio)), el("td", "muted", detail));
       if (!p.ok) status = "bad";
@@ -251,16 +260,22 @@
       ["Memory used", finite(host.mem_used_pct) ? `${host.mem_used_pct}% of ${fmtBytes(host.mem_total)}` : "–"],
       ["Disk used (/)", disk && finite(disk.used_pct) ? `${disk.used_pct}% of ${fmtBytes(disk.total)}` : "–"],
       ["Server up since", parseTs(host.boot_time) != null ? `${fmtTime(parseTs(host.boot_time))} (${fmtDur(host.uptime_s)})` : "–"],
-      ["Apache", ap.ok ? `${finite(ap.req_per_sec) ? ap.req_per_sec.toFixed(1) : "–"} req/s · ${ap.busy_workers ?? "–"} busy / ${ap.idle_workers ?? "–"} idle workers · up ${fmtDur(ap.uptime_s)}` : "not reachable"],
-      ["Requests, last interval", lg.total ? `${lg.total.hits} (${lg.total.s5xx} server errors, p95 ${fmtMs(lg.total.p95_ms)})` : "–"],
+      ["Apache", ap.ok ? `${ap.busy_workers ?? "–"} busy / ${ap.idle_workers ?? "–"} idle workers · ${finite(ap.req_per_sec) ? ap.req_per_sec.toFixed(1) : "–"} req/s averaged since Apache started ${fmtDur(ap.uptime_s)} ago` : "not reachable"],
+      ["Requests, last interval", lg.total && finite(lg.window_s) && lg.window_s > 0
+        ? `${lg.total.hits} in ${fmtDur(lg.window_s)} (≈${Math.round(lg.total.hits / (lg.window_s / 60))}/min) · ${lg.total.s5xx} server errors · p95 ${fmtMs(lg.total.p95_ms)}${lg.unparsed ? ` · ${lg.unparsed} unparsed lines` : ""}`
+        : "–"],
     ];
+    if (lg.parsed && lg.unparsed > 0.01 * (lg.parsed + lg.unparsed)) {
+      warn(`${lg.unparsed} of ${lg.parsed + lg.unparsed} log lines in the last interval could not be parsed; traffic figures are incomplete.`);
+      if (status === "good") status = "warn";
+    }
     for (const [k, v] of rows) { dl.append(el("dt", null, k), el("dd", null, v)); }
 
     // charts
     renderCharts($(".charts", sec), d.series, d.seriesError, h.name);
 
     // events: restarts and outages, each paired with the recovery that followed it
-    const all = Array.isArray(d.events?.events) ? d.events.events : [];   // newest first
+    const all = (Array.isArray(d.events?.events) ? d.events.events : []).filter(e => e && typeof e === "object");   // newest first
     const etb = $(".events tbody", sec);
     const shown = all.filter(e => e && e.kind !== "healthy").slice(0, 25);
     for (const e of shown) {
@@ -284,45 +299,58 @@
 
   // ------------------------------------------------------------ uptime
   /** Availability over the selected range.
-   *  Every sample expected between the first real sample and the end of coverage counts; a missing
-   *  sample (host not reporting) counts as DOWN. Time before the first sample counts as no data.
-   *  Coverage ends at the series' generation time while the host is reporting (the coarse series
-   *  lag by up to 30 min) and at "now" when it is not, so silence counts against it.
-   *  Rolled-up points carry n (samples), t0/t1 (first/last real sample) and fractional values. */
-  function uptime(ctx, points, pick) {
-    const now = Math.floor(nowS());
+   *  Each sample covers one collector interval. Every sample expected between the first real sample
+   *  (clipped to the range) and the end of coverage counts; a missing sample (host not reporting)
+   *  counts as DOWN. Coverage ends at the series' generation time while the host is reporting (the
+   *  coarse series lag by up to 30 min) and at "now" when it is not, so silence counts against it.
+   *  Rolled-up points carry n samples between t0 and t1 (plus per-key counts svc_n / probe_n) and are
+   *  spread over the strip bins by time overlap, so nothing depends on bucket/bin alignment. */
+  function uptime(ctx, points, pick, pickN) {
+    const now = Math.floor(nowS()), I = ctx.interval;
     const binW = ctx.span / STRIP_BINS;
     const alignedNow = Math.ceil(now / binW) * binW;          // stable bin edges between renders
-    const start = alignedNow - ctx.span;
+    const start = alignedNow - ctx.span, rangeStart = now - ctx.span;
     const bins = new Array(STRIP_BINS).fill(null);
-    const have = points.filter(p => p && finite(p.t) && finite(pick(p)) && (p.t1 ?? p.t) >= now - ctx.span);
+    const have = points.filter(p => p && finite(p.t) && finite(pick(p)) && (p.t1 ?? p.t) + I > rangeStart);
     if (!have.length) return { ratio: null, bins };
-    const first = have[0].t0 ?? have[0].t;
     const lastSample = have[have.length - 1].t1 ?? have[have.length - 1].t;
     const end = ctx.hostFresh ? Math.min(now, Math.max(ctx.seriesGen ?? lastSample, lastSample)) : now;
+    const first = Math.max(rangeStart, have[0].t0 ?? have[0].t);
+    const wEnd = end + I;                                      // coverage window [first, wEnd)
+    if (wEnd <= first) return { ratio: null, bins };
+    const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 
-    // per-bin observed samples and "up" samples
     const obs = new Array(STRIP_BINS).fill(0), ups = new Array(STRIP_BINS).fill(0);
-    let sum = 0;
-    for (const p of have) {
-      const v = pick(p), n = finite(p.n) ? p.n : 1;
-      sum += v * n;
-      const b = Math.min(STRIP_BINS - 1, Math.max(0, Math.floor(((p.t0 ?? p.t) - start) / binW)));
-      obs[b] += n; ups[b] += v * n;
+    let sum = 0, observed = 0;
+    for (let i = 0; i < have.length; i++) {
+      const p = have[i], v = pick(p);
+      // time-weighted: a raw sample covers until the next sample (at most one interval), so extra
+      // off-schedule runs do not count as extra intervals; a rolled bucket never counts more samples
+      // than the time it spans
+      const s0 = p.t0 ?? p.t;
+      const next = have[i + 1];
+      const s1 = p.t1 != null ? p.t1 + I : Math.min(p.t + I, next && finite(next.t0 ?? next.t) ? (next.t0 ?? next.t) : p.t + I);
+      const span = Math.max(1, s1 - s0);
+      const nRaw = finite(pickN?.(p)) ? pickN(p) : (finite(p.n) ? p.n : 1);
+      const n = p.t1 != null ? Math.min(nRaw, span / I) : span / I;
+      const fw = overlap(s0, s1, first, wEnd) / span;         // fraction of this point inside the window
+      sum += v * n * fw; observed += n * fw;
+      for (let b = 0; b < STRIP_BINS; b++) {
+        const fb = overlap(s0, s1, start + b * binW, start + (b + 1) * binW) / span;
+        if (fb > 0) { obs[b] += n * fb; ups[b] += v * n * fb; }
+      }
     }
-    const expected = Math.max(1, Math.floor((end - first) / ctx.interval) + 1);
-    const ratio = Math.min(1, sum / Math.max(expected, have.reduce((a, p) => a + (finite(p.n) ? p.n : 1), 0)));
+    const expected = Math.max(1, Math.round((wEnd - first) / I));
+    const ratio = Math.min(1, sum / Math.max(expected, observed));
 
-    // colour each bin by coverage: samples expected in the part of the bin inside [first, end],
-    // allowing one sample of scheduling jitter so bin edges do not create false partial bins
+    // colour bins by how much of the covered time was down or missing (one sample of slack for jitter)
     for (let b = 0; b < STRIP_BINS; b++) {
-      const b0 = Math.max(start + b * binW, first), b1 = Math.min(start + (b + 1) * binW, end);
-      if (b1 <= b0) continue;                                    // outside coverage: no data
-      const exp = (b1 - b0) / ctx.interval;
-      const tolerance = Math.max(1, ctx.step / ctx.interval);     // one sample, or one rolled-up bucket
-      const missing = Math.max(0, exp - tolerance - obs[b]);
-      const denom = obs[b] + missing;
-      bins[b] = denom > 0 ? Math.min(1, ups[b] / denom) : 1;
+      const cov = overlap(start + b * binW, start + (b + 1) * binW, first, wEnd);
+      if (cov <= 0) continue;                                   // outside coverage: no data
+      const exp = cov / I;
+      const missing = Math.max(0, exp - 1 - obs[b]);
+      const down = (obs[b] - ups[b]) + missing;
+      bins[b] = { down, exp, ratio: Math.min(1, ups[b] / Math.max(exp, obs[b])) };
     }
     return { ratio, bins };
   }
@@ -334,9 +362,15 @@
     const binW = ctx.span / STRIP_BINS, alignedNow = Math.ceil(Math.floor(nowS()) / binW) * binW, start = alignedNow - ctx.span;
     up.bins.forEach((v, i) => {
       const b = el("i");
-      if (v != null) b.className = v >= 0.95 ? "ok" : v <= 0.05 ? "bad" : "part";
       const t0 = start + i * binW;
-      b.title = `${fmtTime(t0)} – ${fmtTime(t0 + binW)}: ${v == null ? "no data" : v >= 0.95 ? "up" : v <= 0.05 ? "down or not reporting" : `${Math.round(v * 100)}% up`}`;
+      let text = "no data";
+      if (v) {
+        const downMin = Math.round(v.down * ctx.interval / 60);
+        if (v.down <= 1) { b.className = "ok"; text = "up"; }
+        else if (v.ratio <= 0.05) { b.className = "bad"; text = `down or not reporting (~${fmtDur(downMin * 60)})`; }
+        else { b.className = "part"; text = `~${fmtDur(downMin * 60)} down or not reporting`; }
+      }
+      b.title = `${fmtTime(t0)} – ${fmtTime(t0 + binW)}: ${text}`;
       box.appendChild(b);
     });
     return box;
@@ -381,7 +415,7 @@
   function withGaps(points, step) {
     const out = [];
     for (let i = 0; i < points.length; i++) {
-      if (i && points[i].t - points[i - 1].t > step * 2) out.push({ t: points[i - 1].t + step });
+      if (i && points[i].t - points[i - 1].t > step * 1.5) out.push({ t: points[i - 1].t + step });
       out.push(points[i]);
     }
     return out;

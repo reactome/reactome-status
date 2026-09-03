@@ -55,11 +55,12 @@ case "${1:-}" in
     ;;
   site)
     # never touch data/ or raw/ (written by the collectors)
-    aws s3 sync "$SITE/" "s3://$DOMAIN/" --delete \
-      --exclude "data/*" --exclude "raw/*" --exclude "vendor/*" \
+    # the page lives under site/ (CloudFront OriginPath), a prefix the hosts' upload policy cannot write
+    aws s3 sync "$SITE/" "s3://$DOMAIN/site/" --delete \
+      --exclude "data/*" --exclude "vendor/*" \
       --cache-control "max-age=300" --only-show-errors
-    # vendor files live under a versioned directory (site/vendor/<lib>-<version>/), so immutable is safe
-    aws s3 sync "$SITE/vendor/" "s3://$DOMAIN/vendor/" \
+    # vendor files live under versioned directories (site/vendor/<lib>-<version>/), so immutable is safe
+    aws s3 sync "$SITE/vendor/" "s3://$DOMAIN/site/vendor/" \
       --cache-control "max-age=31536000, immutable" --only-show-errors
     dist=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)
     aws cloudfront create-invalidation --distribution-id "$dist" --paths "/*" --query Invalidation.Id --output text

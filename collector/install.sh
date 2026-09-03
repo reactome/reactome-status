@@ -39,6 +39,10 @@ while [[ "$(systemctl show -p ActiveState --value reactome-status-collector.serv
 
 install -d -o root -g root -m 755 /opt/reactome-status /etc/reactome-status
 install -o root -g root -m 755 "$HERE/collector.py" /opt/reactome-status/collector.py
+if [[ -f /etc/reactome-status/config.json ]] && ! cmp -s "$CONFIG_SRC" /etc/reactome-status/config.json; then
+  cp -p /etc/reactome-status/config.json "/etc/reactome-status/config.json.bak-$(date +%s)"
+  echo "NOTE: the installed config differed from $CONFIG_SRC; the old one was kept as config.json.bak-*"
+fi
 install -o root -g root -m 644 "$CONFIG_SRC" /etc/reactome-status/config.json
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 750 /var/lib/reactome-status
 chown -R "$SVC_USER:$SVC_USER" /var/lib/reactome-status
