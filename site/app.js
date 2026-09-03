@@ -304,12 +304,40 @@
     plots.push(u);
 
     if (seriesDefs.length > 1) {
+      // per-chart visibility, remembered in this browser
+      const key = `status.series.${title}`;
+      let hidden = new Set();
+      try { hidden = new Set(JSON.parse(localStorage.getItem(key) || "[]")); } catch (_) { /* ignore */ }
+      const save = () => { try { localStorage.setItem(key, JSON.stringify([...hidden])); } catch (_) { /* ignore */ } };
+      const chips = [];
+      const apply = () => {
+        seriesDefs.forEach((s, k) => {
+          const show = !hidden.has(s.label);
+          u.setSeries(k + 1, { show });
+          chips[k].classList.toggle("off", !show);
+          chips[k].setAttribute("aria-pressed", String(show));
+        });
+        save();
+      };
       seriesDefs.forEach((s, k) => {
-        const sp = el("span", null, s.label); sp.style.setProperty("--c", s.color);
-        sp.onclick = () => { const show = !u.series[k + 1].show; u.setSeries(k + 1, { show }); sp.classList.toggle("off", !show); };
+        const sp = el("button", "chip", s.label);
+        sp.type = "button";
+        sp.style.setProperty("--c", s.color);
+        sp.title = "Click to show or hide · double-click to show only this series";
+        sp.onclick = () => { hidden.has(s.label) ? hidden.delete(s.label) : hidden.add(s.label); apply(); };
+        sp.ondblclick = () => { hidden = new Set(seriesDefs.map(x => x.label).filter(l => l !== s.label)); apply(); };
+        chips.push(sp);
         legend.appendChild(sp);
       });
+      const tools = el("span", "legend-tools");
+      const all = el("button", "link", "all"); all.type = "button";
+      all.onclick = () => { hidden = new Set(); apply(); };
+      const none = el("button", "link", "none"); none.type = "button";
+      none.onclick = () => { hidden = new Set(seriesDefs.map(x => x.label)); apply(); };
+      tools.append(all, document.createTextNode(" · "), none);
+      legend.appendChild(tools);
       box.appendChild(legend);
+      apply();
     }
     new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height: 200 })).observe(plotEl);
   }
