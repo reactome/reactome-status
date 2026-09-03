@@ -9,9 +9,16 @@
   const STALE_BAD_S = 12 * 60;
   const GROUP_ORDER = ["ContentService", "AnalysisService", "PathwayBrowser", "RESTfulAPI", "Website", "Chatbot", "other"];
 
-  let range = localStorage.getItem("status.range") || "24h";
+  // storage may be blocked (private mode, locked-down browsers): never let it break the page
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* ignore */ } },
+  };
+  let range = RANGE_SECONDS[store.get("status.range")] ? store.get("status.range") : "24h";
   const plots = [];             // live uPlot instances (destroyed on re-render)
+  const observers = [];         // ResizeObservers, disconnected on re-render
   const state = { hosts: [], data: {} };
+  let refreshSeq = 0;           // discards responses that finish after a newer refresh started
 
   // ------------------------------------------------------------ helpers
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -53,6 +60,7 @@
   }
 
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
       if (!state.hosts.length) state.hosts = (await getJSON("hosts.json")).hosts;
     } catch (e) {
@@ -60,6 +68,7 @@
       return;
     }
     const loaded = await Promise.all(state.hosts.map(loadHost));
+    if (seq !== refreshSeq) return;   // a newer refresh (e.g. range change) superseded this one
     state.hosts.forEach((h, i) => { state.data[h.name] = loaded[i]; });
     render();
   }
@@ -67,6 +76,7 @@
   // ------------------------------------------------------------ render
   function render() {
     plots.splice(0).forEach(p => p.destroy());
+    observers.splice(0).forEach(o => o.disconnect());
     const main = $("#hosts");
     main.innerHTML = "";
     let overall = "good", overallText = "All systems operational";
@@ -126,7 +136,8 @@
       const box = el("div", "svc");
       const row = el("div", "svc-row");
       row.append(el("span", null, name));
-      const right = el("span", "since", s.up ? `up ${fmtDur(Math.max(0, nowS() - parseTs(s.since)))}${s.restarts ? ` · ${s.restarts} restarts` : ""} · ` : `${s.state} · `);
+      const upFor = s.since ? `up ${fmtDur(Math.max(0, nowS() - parseTs(s.since)))}` : "up";
+      const right = el("span", "since", s.up ? `${upFor}${s.restarts ? ` · ${s.restarts} restarts` : ""} · ` : `${s.state} · `);
       right.append(el("span", "pct", up.pct == null ? "–" : `${up.pct}%`));
       row.append(right);
       box.append(row, strip(up.bins, name));
@@ -165,24 +176,25 @@
     // charts
     renderCharts($(".charts", sec), d.series);
 
-    // events
-    const ev = (d.events?.events || []).filter(e => e.kind !== "healthy" || e.healthy_within_s != null);
+    // events: restarts and outages, each paired with the recovery that followed it
+    const all = d.events?.events || [];                       // newest first
     const etb = $(".events tbody", sec);
-    const byStart = {};
-    for (const e of d.events?.events || []) if (e.kind === "healthy") byStart[`${e.service}|${e.started_at}`] = e;
-    const shown = (d.events?.events || []).filter(e => e.kind !== "healthy").slice(0, 25);
+    const shown = all.filter(e => e.kind !== "healthy").slice(0, 25);
+    const recoveryAfter = (e) => all.filter(h => h.kind === "healthy" && h.service === e.service && h.ts > e.ts).pop();
     for (const e of shown) {
       const tr = el("tr");
       let detail = "";
       if (e.kind === "restart") {
-        const rec = byStart[`${e.service}|${e.started_at}`];
-        detail = rec ? `healthy within ${fmtDur(rec.healthy_within_s)} (checked every 5 min)` : "not yet seen healthy";
-      } else if (e.kind === "down") detail = `state: ${e.state}`;
+        const rec = all.find(h => h.kind === "healthy" && h.service === e.service && h.started_at === e.started_at);
+        detail = rec && rec.healthy_within_s != null ? `healthy within ${fmtDur(rec.healthy_within_s)} (checked every 5 min)` : "not yet seen healthy";
+      } else if (e.kind === "down") {
+        const rec = recoveryAfter(e);
+        detail = rec ? `back up by ${fmtTime(parseTs(rec.ts))} (state was ${e.state})` : `still down · state: ${e.state}`;
+      }
       tr.append(el("td", "since", fmtTime(parseTs(e.ts))), el("td", null, e.service), el("td", null, e.kind === "restart" ? "Restarted" : "Went down"), el("td", "muted", detail));
       etb.appendChild(tr);
     }
     if (!shown.length) $(".events .none", sec).hidden = false;
-    void ev;
 
     sec.dataset.status = status;
     return sec;
@@ -293,7 +305,7 @@
 
     const u = new uPlot({
       width: plotEl.clientWidth || 340, height: 200,
-      cursor: { points: { size: 8 }, drag: { x: true, y: false } },
+      cursor: { points: { size: 8 }, drag: { x: false, y: false } },
       legend: { show: false },
       // x-axis always spans the selected window, however much data exists yet
       scales: { x: { time: true, range: () => [Math.floor(nowS()) - RANGE_SECONDS[range], Math.floor(nowS())] }, y: { range: (u, min, max) => [0, opts.max ?? (max <= 0 ? 1 : max * 1.1)] } },
@@ -307,8 +319,15 @@
         setCursor: [u => {
           const i = u.cursor.idx;
           if (i == null || u.data[0][i] == null) { tip.style.display = "none"; return; }
-          const rows = seriesDefs.map((s, k) => u.series[k + 1].show ? `<div class="row"><span><i style="background:${s.color}"></i>${s.label}</span><b>${fmt(u.data[k + 1][i])}</b></div>` : "").join("");
-          tip.innerHTML = `<div class="muted">${fmtTime(u.data[0][i])}</div>${rows}`;
+          tip.replaceChildren(el("div", "muted", fmtTime(u.data[0][i])));
+          seriesDefs.forEach((s, k) => {
+            if (!u.series[k + 1].show) return;
+            const row = el("div", "row"), name = el("span"), sw = el("i");
+            sw.style.background = s.color;
+            name.append(sw, document.createTextNode(s.label));
+            row.append(name, el("b", null, fmt(u.data[k + 1][i])));
+            tip.appendChild(row);
+          });
           tip.style.display = "block";
           const left = u.cursor.left, w = box.clientWidth;
           tip.style.top = "36px";
@@ -322,8 +341,8 @@
       // per-chart visibility, remembered in this browser
       const key = `status.series.${title}`;
       let hidden = new Set();
-      try { hidden = new Set(JSON.parse(localStorage.getItem(key) || "[]")); } catch (_) { /* ignore */ }
-      const save = () => { try { localStorage.setItem(key, JSON.stringify([...hidden])); } catch (_) { /* ignore */ } };
+      try { hidden = new Set(JSON.parse(store.get(key) || "[]")); } catch (_) { /* ignore */ }
+      const save = () => store.set(key, JSON.stringify([...hidden]));
       const chips = [];
       const apply = () => {
         seriesDefs.forEach((s, k) => {
@@ -354,7 +373,9 @@
       box.appendChild(legend);
       apply();
     }
-    new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height: 200 })).observe(plotEl);
+    const ro = new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height: 200 }));
+    ro.observe(plotEl);
+    observers.push(ro);
   }
 
   // ------------------------------------------------------------ wiring
@@ -362,7 +383,7 @@
     b.classList.toggle("active", b.dataset.range === range);
     b.onclick = () => {
       range = b.dataset.range;
-      try { localStorage.setItem("status.range", range); } catch (_) { /* ignore */ }
+      store.set("status.range", range);
       document.querySelectorAll(".range button").forEach(x => x.classList.toggle("active", x === b));
       refresh();
     };
