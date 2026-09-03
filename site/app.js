@@ -4,6 +4,7 @@
   "use strict";
 
   const REFRESH_MS = 60_000;
+  const RANGE_SECONDS = { "24h": 86400, "7d": 7 * 86400, "90d": 90 * 86400 };
   const STALE_WARN_S = 7 * 60;     // collector runs every 5 min
   const STALE_BAD_S = 12 * 60;
   const GROUP_ORDER = ["ContentService", "AnalysisService", "PathwayBrowser", "RESTfulAPI", "Website", "Chatbot", "other"];
@@ -215,9 +216,6 @@
       if (i && points[i].t - points[i - 1].t > step * 2) out.push({ t: points[i - 1].t + step });
       out.push(points[i]);
     }
-    // extend to "now" with a gap marker so a stale host visibly stops
-    const last = points[points.length - 1].t;
-    if (nowS() - last > step * 2) { out.push({ t: last + step }); out.push({ t: Math.floor(nowS()), _pad: true }); }
     return out;
   }
 
@@ -240,13 +238,14 @@
       width: plotEl.clientWidth || 340, height: 200,
       cursor: { points: { size: 8 }, drag: { x: true, y: false } },
       legend: { show: false },
-      scales: { x: { time: true }, y: { range: (u, min, max) => [0, opts.max ?? (max <= 0 ? 1 : max * 1.1)] } },
+      // x-axis always spans the selected window, however much data exists yet
+      scales: { x: { time: true, range: () => [Math.floor(nowS()) - RANGE_SECONDS[range], Math.floor(nowS())] }, y: { range: (u, min, max) => [0, opts.max ?? (max <= 0 ? 1 : max * 1.1)] } },
       axes: [
         { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { stroke: css("--axis"), width: 1 }, font: "11px system-ui" },
         { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { show: false }, size: 56, gap: 6, font: "11px system-ui",
           values: (u, vals) => vals.map(v => opts.fmt ? opts.fmt(v) : opts.unit === "%" ? `${v}%` : `${v}`) },
       ],
-      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: 2, spanGaps: false, points: { show: false } }))],
+      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: 2, spanGaps: false, points: { size: 6, fill: s.color } }))],
       hooks: {
         setCursor: [u => {
           const i = u.cursor.idx;
