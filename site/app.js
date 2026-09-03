@@ -45,7 +45,9 @@
     return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
   };
   const fmtAgo = (ts) => finite(ts) ? `${fmtDur(nowS() - ts)} ago` : "–";
-  const fmtBytes = (b) => !finite(b) ? "–" : b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(0)} GB` : `${(b / 1e6).toFixed(0)} MB`;
+  // binary units, matching what `free` and `df` show on the server (a 64 GiB machine reports 61.8 GiB usable)
+  const GiB = 1024 ** 3;
+  const fmtBytes = (b) => !finite(b) ? "–" : b >= 1024 * GiB ? `${(b / (1024 * GiB)).toFixed(2)} TiB` : b >= GiB ? `${(b / GiB).toFixed(1)} GiB` : `${(b / 1024 ** 2).toFixed(0)} MiB`;
   const fmtMs = (v) => !finite(v) ? "–" : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`;
   const fmtPct = (ratio) => !finite(ratio) ? "–" : ratio >= 1 ? "100%" : `${(Math.floor(ratio * 10000) / 100).toFixed(2)}%`; // never rounds up to 100
 
