@@ -6,6 +6,7 @@
   const REFRESH_MS = 60_000;
   const FETCH_TIMEOUT_MS = 20_000;
   const RANGE_SECONDS = { "24h": 86400, "7d": 7 * 86400, "90d": 90 * 86400 };
+  const isRange = (r) => typeof r === "string" && Object.hasOwn(RANGE_SECONDS, r);
   // staleness thresholds relative to the host's reporting interval (5 min by default): warn after
   // one missed report plus slack, "down" after two
   const staleWarn = (interval) => interval + 120;
@@ -36,7 +37,7 @@
   // #range=7d  |  #range=24h&chart=<host>|<title>&crange=custom&from=<unix>&to=<unix>
   const readHash = () => Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
   const hashState = readHash();
-  let range = RANGE_SECONDS[hashState.range] ? hashState.range : (RANGE_SECONDS[store.get("status.range")] ? store.get("status.range") : "24h");
+  let range = isRange(hashState.range) ? hashState.range : (isRange(store.get("status.range")) ? store.get("status.range") : "24h");
   function writeHash() {
     const q = new URLSearchParams({ range });
     if (expanded) {
@@ -44,7 +45,7 @@
       if (expanded.range && expanded.range !== range) q.set("crange", expanded.range);
       if (expanded.range === "custom" && finite(expanded.from) && finite(expanded.to)) { q.set("from", String(Math.floor(expanded.from))); q.set("to", String(Math.floor(expanded.to))); }
     }
-    history.replaceState(null, "", `#${q.toString()}`);
+    try { history.replaceState(null, "", `#${q.toString()}`); } catch (_) { /* Safari throttles replaceState */ }
   }
 
   const plots = [];             // live uPlot instances (destroyed on re-render)
@@ -127,8 +128,9 @@
     state.hosts.forEach((h, i) => { state.data[h.name] = loaded[i]; });
     render();
     if (hashState.chart && !expanded && chartDefs.has(hashState.chart)) {
-      const r = hashState.crange === "custom" ? "custom" : (RANGE_SECONDS[hashState.crange] ? hashState.crange : range);
-      openModal(hashState.chart, { key: hashState.chart, range: r, from: +hashState.from || null, to: +hashState.to || null });
+      const r = hashState.crange === "custom" ? "custom" : (isRange(hashState.crange) ? hashState.crange : range);
+      const num = (v) => { const n = Number(v); return finite(n) ? n : null; };
+      openModal(hashState.chart, { key: hashState.chart, range: r, from: num(hashState.from), to: num(hashState.to) });
       delete hashState.chart;   // only on first load
     }
   }
@@ -461,7 +463,7 @@
   function withGaps(points, step) {
     const out = [];
     for (let i = 0; i < points.length; i++) {
-      if (i && points[i].t - points[i - 1].t > step * 1.5) out.push({ t: points[i - 1].t + step });
+      if (i && points[i].t - points[i - 1].t > step * 1.5) out.push({ t: points[i - 1].t + step, gap: true });
       out.push(points[i]);
     }
     return out;
@@ -470,6 +472,8 @@
   const chartDefs = new Map();      // `${host}|${title}` -> { hostName, spec }, for the enlarged view
   let expanded = null;              // { key, range, from, to } while a chart is enlarged; survives refreshes
   const modalPlots = [];
+  const modalObservers = [];
+  let modalSeq = 0;               // discards a slow series fetch superseded by a later click
 
   function chart(container, hostName, spec, view) {
     const key = `${hostName}|${spec.title}`;
@@ -498,7 +502,7 @@
   }
 
   /** Build a uPlot with legend chips into `box` and register the instance in `list`. */
-  function mountPlot(box, def, height, list) {
+  function mountPlot(box, def, height, list, roList = observers) {
     const { hostName, spec, seriesDefs, view } = def;
     const opts = spec;
     const plotEl = el("div", "plot"); plotEl.style.height = `${height}px`;
@@ -582,7 +586,7 @@
     }
     const ro = new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height }));
     ro.observe(plotEl);
-    observers.push(ro);
+    roList.push(ro);
   }
 
   // ------------------------------------------------------------ enlarged view with its own time range
@@ -609,29 +613,34 @@
     const wasOpen = expanded?.key === key;
     sel = sel || (wasOpen ? expanded : { key, range, from: null, to: null });
     expanded = { ...sel, key };
+    const my = ++modalSeq;
     const { hostName, spec } = def;
     const now = Math.floor(nowS());
 
     // resolve the window and the history file for it
     let x0, x1, fileRange, note = "";
     if (sel.range === "custom" && finite(sel.from) && finite(sel.to)) {
+      const lo = now - RANGE_SECONDS["90d"];
       x0 = Math.min(sel.from, sel.to); x1 = Math.max(sel.from, sel.to);
-      if (x1 > now) x1 = now;
-      if (x1 - x0 < 1800) x0 = x1 - 1800;
-      if (x0 < now - RANGE_SECONDS["90d"]) { x0 = now - RANGE_SECONDS["90d"]; note = " · history starts 90 days ago"; }
+      if (x0 < lo) note = " · history starts 90 days ago";
+      x1 = Math.min(now, Math.max(x1, lo + 1800));
+      x0 = Math.max(lo, Math.min(x0, x1 - 1800));
+      expanded.from = x0; expanded.to = x1;                   // the shared link carries the clamped window
       fileRange = rangeCovering(x0);
     } else {
-      fileRange = RANGE_SECONDS[sel.range] ? sel.range : range;
+      fileRange = isRange(sel.range) ? sel.range : range;
       x1 = now; x0 = now - RANGE_SECONDS[fileRange];
     }
     const series = await seriesFor(hostName, fileRange);
-    if (expanded?.key !== key) return;                         // closed or changed while loading
+    if (my !== modalSeq || expanded?.key !== key) return;      // closed or superseded while loading
     const view = makeView(series, x0, x1);
     const C = SERIES();
     const seriesDefs = spec.build(view.pts, C, groupsIn(view.pts));
 
     // (re)build the dialog
     modalPlots.splice(0).forEach(p => p.destroy());
+    modalObservers.splice(0).forEach(o => o.disconnect());
+    const prevFocus = document.getElementById("modal")?.contains(document.activeElement) ? (document.activeElement.dataset.range ? `range:${document.activeElement.dataset.range}` : document.activeElement.dataset.key ? `key:${document.activeElement.dataset.key}` : document.activeElement.className) : null;
     let overlay = document.getElementById("modal");
     if (!overlay) {
       overlay = el("div", "modal"); overlay.id = "modal";
@@ -639,6 +648,7 @@
       overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
       document.body.appendChild(overlay);
       document.body.classList.add("modal-open");
+      for (const sel of ["header", ".notice", "main", "footer"]) document.querySelector(sel)?.setAttribute("inert", "");
     }
     overlay.setAttribute("aria-label", `${spec.title}, enlarged`);
     const dialog = el("div", "modal-box");
@@ -659,7 +669,7 @@
     const close = el("button", "close", "✕"); close.type = "button"; close.title = "Close (Esc)"; close.setAttribute("aria-label", "Close enlarged chart");
     close.onclick = () => closeModal();
     const tools = el("div", "modal-tools");
-    const csv = el("button", "btn", "Download CSV"); csv.type = "button"; csv.title = "The points shown in this chart, one row per time";
+    const csv = el("button", "btn", "Download CSV"); csv.type = "button"; csv.title = "All series of this chart for the shown window, one row per time";
     csv.onclick = () => downloadCsv(hostName, spec, view, seriesDefs, windowText);
     const link = el("button", "btn", "Copy link"); link.type = "button"; link.title = "Copy a link that opens this chart with this range";
     link.onclick = async () => {
@@ -686,7 +696,8 @@
         quick.append(q);
       }
       form.append(el("label", null, "From"), from, el("label", null, "To"), to, apply, quick);
-      form.onsubmit = (e) => { e.preventDefault(); const f = Date.parse(from.value) / 1000, t = Date.parse(to.value) / 1000; if (finite(f) && finite(t)) openModal(key, { key, range: "custom", from: f, to: t }); };
+        const parseLocal = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v || ""); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() / 1000 : null; };
+      form.onsubmit = (e) => { e.preventDefault(); const f = parseLocal(from.value), t = parseLocal(to.value); if (f != null && t != null) openModal(key, { key, range: "custom", from: f, to: t }); else form.classList.add("invalid"); };
       dialog.append(form);
     }
     overlay.replaceChildren(dialog);
@@ -694,15 +705,23 @@
     if (!seriesDefs.length || !seriesDefs.some(s => s.data.some(v => v != null))) {
       dialog.append(el("p", "empty", series ? "No data in this window." : `Could not load the ${fileRange} history.`));
     } else {
-      mountPlot(dialog, { hostName, spec, seriesDefs, view }, height, modalPlots);
+      mountPlot(dialog, { hostName, spec, seriesDefs, view }, height, modalPlots, modalObservers);
     }
-    if (!wasOpen) close.focus();
+    // keep keyboard focus on the control the user was using, or on Close
+    let target = null;
+    if (prevFocus?.startsWith("range:")) target = dialog.querySelector(`.range [data-range="${CSS.escape(prevFocus.slice(6))}"]`);
+    else if (prevFocus?.startsWith("key:")) target = dialog.querySelector(`[data-key="${CSS.escape(prevFocus.slice(4))}"]`);
+    else if (prevFocus) target = dialog.querySelector(`.${prevFocus.split(" ")[0]}`);
+    (target || close).focus();
   }
 
   function closeModal(clearState = true) {
+    modalSeq++;
     modalPlots.splice(0).forEach(p => p.destroy());
+    modalObservers.splice(0).forEach(o => o.disconnect());
     document.getElementById("modal")?.remove();
     document.body.classList.remove("modal-open");
+    for (const sel of ["header", ".notice", "main", "footer"]) document.querySelector(sel)?.removeAttribute("inert");
     if (clearState) {
       const key = expanded?.key; expanded = null;
       writeHash();
@@ -710,23 +729,26 @@
     }
   }
 
-  /** CSV of the visible window: ISO time first, then one column per series (hidden series included). */
+  /** CSV of the visible window: ISO time first, then one column per series (all series, hidden ones too). */
   function downloadCsv(hostName, spec, view, seriesDefs, windowText) {
-    const esc = (v) => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const esc = (v) => {
+      let t = v == null ? "" : String(v);
+      if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;                 // never let a spreadsheet treat a cell as a formula
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
     const unit = spec.unit ? ` (${spec.unit.replace("/min", "per min")})` : "";
-    const rows = [["time_utc", ...seriesDefs.map(s => `${s.label}${unit}`)].map(esc).join(",")];
+    const rows = [["time_utc", "host", "resolution", ...seriesDefs.map(s => `${s.label}${unit}`)].map(esc).join(",")];
+    const res = STEP_LABEL(view.step);
     view.pts.forEach((p, i) => {
-      if (!p || p.t == null || (p.log === undefined && p.svc === undefined && p.probe_ok === undefined && p.load1 === undefined)) return; // gap marker
-      rows.push([new Date(p.t * 1000).toISOString(), ...seriesDefs.map(s => s.data[i] == null ? "" : s.data[i])].map(esc).join(","));
+      if (!p || p.gap || !finite(p.t)) return;
+      rows.push([new Date(p.t * 1000).toISOString(), hostName, res, ...seriesDefs.map(s => s.data[i] == null ? "" : s.data[i])].map(esc).join(","));
     });
-    const blob = new Blob([`# ${hostName} · ${spec.title} · ${windowText} · ${STEP_LABEL(view.step)}\n${rows.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([`\uFEFF${rows.join("\r\n")}\r\n`], { type: "text/csv;charset=utf-8" });
     const a = el("a"); a.href = URL.createObjectURL(blob);
     a.download = `${hostName}-${spec.title}-${new Date(view.x0 * 1000).toISOString().slice(0, 16)}_${new Date(view.x1 * 1000).toISOString().slice(0, 16)}.csv`.replace(/[^\w.\-]+/g, "_");
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && expanded) closeModal(); });
-
   // ------------------------------------------------------------ wiring
   document.querySelectorAll(".range button").forEach(b => {
     const on = b.dataset.range === range;
@@ -744,9 +766,9 @@
     theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
     store.set("status.theme", theme);
     applyTheme();
-    state.lastSig = null; render();          // charts read their colours from CSS variables
+    if (state.hosts.length && Object.keys(state.data).length) { state.lastSig = null; render(); }   // charts read colours from CSS variables
   };
-  writeHash();
+  if (!hashState.chart) writeHash();      // a shared link keeps its chart parameters until the chart has been opened
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (theme === "auto" && state.hosts.length) { state.lastSig = null; render(); } });
   refresh();
   setInterval(refresh, REFRESH_MS);

@@ -97,6 +97,7 @@ dl.hostinfo dt { color:var(--muted); } dl.hostinfo dd { margin:0; font-variant-n
 .custom-range { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:4px 0 10px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--brand-tint); font-size:13px; }
 .custom-range label { color:var(--muted); }
 .custom-range input { font: inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color-scheme: inherit; }
+.custom-range.invalid input:invalid, .custom-range.invalid input:placeholder-shown { border-color: var(--critical); }
 .custom-range .apply { font: inherit; background:var(--brand); color:#fff; border:1px solid var(--brand); border-radius:6px; padding:5px 12px; cursor:pointer; }
 .custom-range .quick { margin-left:auto; display:flex; gap:12px; }
 .custom-range .quick .link { font: inherit; color:var(--brand); background:none; border:0; padding:0; cursor:pointer; text-decoration:underline; }
