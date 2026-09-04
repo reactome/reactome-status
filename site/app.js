@@ -132,7 +132,7 @@
     plots.splice(0).forEach(p => p.destroy());
     observers.splice(0).forEach(o => o.disconnect());
     const focusKey = document.activeElement?.dataset?.key || null;
-    if (expanded && !chartDefs.has(expanded)) closeModal();
+    if (expanded && !chartDefs.has(expanded.key)) closeModal();
     const sections = [];
     let worst = "unknown";
     const rank = { unknown: 0, good: 1, warn: 2, bad: 3 };
@@ -380,41 +380,53 @@
   }
 
   // ------------------------------------------------------------ charts
+  const hash = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; };
+  const RANGE_LABEL = { "24h": "last 24 hours", "7d": "last 7 days", "90d": "last 90 days" };
+  const STEP_LABEL = (step) => step <= 300 ? "5-minute points" : step <= 1800 ? "30-minute averages" : "6-hour averages";
+
+  /** Chart catalogue: how to derive each chart's series from a list of points. */
+  const CHARTS = [
+    { title: "Requests per minute by service", sub: () => "From the Apache access log, all clients", unit: "/min",
+      build: (pts, C, groups) => groups.map(g => ({ label: g, color: colorFor(C, g, GROUP_ORDER), data: pts.map(p => perMin(p, g, 0)) })) },
+    { title: "Responses by HTTP status class", sub: () => "Requests per minute, all services", unit: "/min",
+      build: (pts, C) => [["2xx", 1], ["3xx", 2], ["4xx", 3], ["5xx", 4]].map(([label, idx], i) => ({ label, color: C[i], data: pts.map(p => perMin(p, "_total", idx)) })) },
+    { title: "Response time, 95th percentile", sub: (step) => step <= 300 ? "Apache-measured time to serve, by service" : "Apache-measured; hit-weighted mean of 5-minute p95 values", unit: "ms", fmt: fmtMs,
+      build: (pts, C, groups) => groups.map(g => ({ label: g, color: colorFor(C, g, GROUP_ORDER), data: pts.map(p => finite(p.log?.[g]?.[6]) ? p.log[g][6] : null) })) },
+    { title: "Health check latency", sub: () => "Local checks run by the collector", unit: "ms", fmt: fmtMs,
+      build: (pts, C) => { const names = [...new Set(pts.flatMap(p => Object.keys(p.probe_ms || {})))]; return names.map(n => ({ label: n, color: colorFor(C, n, names), data: pts.map(p => finite(p.probe_ms?.[n]) ? p.probe_ms[n] : null) })); } },
+    { title: "Apache workers", sub: () => "Busy vs idle worker processes", unit: "",
+      build: (pts, C) => [{ label: "busy", color: C[1], data: pts.map(p => finite(p.busy) ? p.busy : null) }, { label: "idle", color: C[0], data: pts.map(p => finite(p.idle) ? p.idle : null) }] },
+    { title: "Load average (1 min)", sub: () => "", unit: "",
+      build: (pts, C) => [{ label: "load", color: C[0], data: pts.map(p => finite(p.load1) ? p.load1 : null) }] },
+    { title: "Memory and disk used", sub: () => "Percent of total", unit: "%", max: 100,
+      build: (pts, C) => [{ label: "memory", color: C[0], data: pts.map(p => finite(p.mem) ? p.mem : null) }, { label: "disk /", color: C[2], data: pts.map(p => finite(p.disk) ? p.disk : null) }] },
+  ];
+  const perMin = (p, g, i) => (p && p.log?.[g] && finite(p.win) && p.win > 0 && finite(p.log[g][i])) ? +(p.log[g][i] / (p.win / 60)).toFixed(2) : null;
+  const colorFor = (C, name, order) => { const i = order.indexOf(name); return C[(i >= 0 ? i : order.length + Math.abs(hash(name))) % 8]; };
+  const groupsIn = (pts) => {
+    const present = [...new Set(pts.flatMap(p => Object.keys(p.log || {}).filter(k => k !== "_total")))];
+    return [...GROUP_ORDER.filter(g => present.includes(g)), ...present.filter(g => !GROUP_ORDER.includes(g)).sort()];
+  };
+
+  /** A view = the window [x0, x1] plus the points (with gap markers) that fall in it. */
+  function makeView(series, x0, x1) {
+    const step = finite(series?.step_s) ? series.step_s : 300;
+    const all = (Array.isArray(series?.points) ? series.points : []).filter(p => p && finite(p.t));
+    const pts = withGaps(all.filter(p => p.t >= x0 - step && p.t <= x1 + step), step);
+    return { x0, x1, step, pts, t: pts.map(p => p.t) };
+  }
+
   function renderCharts(container, series, seriesError, hostName) {
     if (!Array.isArray(series?.points) || !series.points.length) {
       container.replaceChildren(el("p", "empty", seriesError && seriesError !== "not found" ? `Could not load the ${range} history (${seriesError}).` : "No time-series data for this range yet."));
       return;
     }
-    const pts = withGaps(series.points.filter(p => p && finite(p.t)), finite(series.step_s) ? series.step_s : 300);
-    const t = pts.map(p => p.t);
-    const C = SERIES();
-    const perMin = (p, g, i) => (p && p.log?.[g] && finite(p.win) && p.win > 0 && finite(p.log[g][i])) ? +(p.log[g][i] / (p.win / 60)).toFixed(2) : null;
-    const colorFor = (name, order) => { const i = order.indexOf(name); return C[(i >= 0 ? i : order.length + Math.abs(hash(name))) % 8]; };
-
-    // groups come from the data; GROUP_ORDER only fixes their order and colours
-    const present = [...new Set(pts.flatMap(p => Object.keys(p.log || {}).filter(k => k !== "_total")))];
-    const groups = [...GROUP_ORDER.filter(g => present.includes(g)), ...present.filter(g => !GROUP_ORDER.includes(g)).sort()];
-    const gseries = (fn) => groups.map(g => ({ label: g, color: colorFor(g, GROUP_ORDER), data: pts.map(p => fn(p, g)) }));
-    const mk = (title, sub, defs, opts) => chart(container, hostName, title, sub, t, defs, opts);
-
-    mk("Requests per minute by service", "From the Apache access log, all clients", gseries((p, g) => perMin(p, g, 0)), { unit: "/min" });
-    mk("Responses by HTTP status class", "Requests per minute, all services",
-      [["2xx", 1], ["3xx", 2], ["4xx", 3], ["5xx", 4]].map(([label, idx], i) => ({ label, color: C[i], data: pts.map(p => perMin(p, "_total", idx)) })), { unit: "/min" });
-    mk("Response time, 95th percentile", range === "24h" ? "Apache-measured time to serve, by service" : "Apache-measured; hit-weighted mean of 5-minute p95 values",
-      gseries((p, g) => finite(p.log?.[g]?.[6]) ? p.log[g][6] : null), { unit: "ms", fmt: fmtMs });
-    const probes = [...new Set(pts.flatMap(p => Object.keys(p.probe_ms || {})))];
-    mk("Health check latency", "Local checks run by the collector",
-      probes.map(n => ({ label: n, color: colorFor(n, probes), data: pts.map(p => finite(p.probe_ms?.[n]) ? p.probe_ms[n] : null) })), { unit: "ms", fmt: fmtMs });
-    mk("Apache workers", "Busy vs idle worker processes",
-      [{ label: "busy", color: C[1], data: pts.map(p => finite(p.busy) ? p.busy : null) }, { label: "idle", color: C[0], data: pts.map(p => finite(p.idle) ? p.idle : null) }], { unit: "" });
-    mk("Load average (1 min)", "", [{ label: "load", color: C[0], data: pts.map(p => finite(p.load1) ? p.load1 : null) }], { unit: "" });
-    mk("Memory and disk used", "Percent of total",
-      [{ label: "memory", color: C[0], data: pts.map(p => finite(p.mem) ? p.mem : null) }, { label: "disk /", color: C[2], data: pts.map(p => finite(p.disk) ? p.disk : null) }], { unit: "%", max: 100 });
+    const now = Math.floor(nowS());
+    const view = makeView(series, now - RANGE_SECONDS[range], now);
+    for (const spec of CHARTS) chart(container, hostName, spec, view);
   }
 
-  const hash = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; };
-
-  /** Insert a null row wherever a gap > 2 steps exists so lines break instead of bridging outages. */
+  /** Insert a null row wherever a gap > 1.5 steps exists so lines break instead of bridging outages. */
   function withGaps(points, step) {
     const out = [];
     for (let i = 0; i < points.length; i++) {
@@ -424,57 +436,61 @@
     return out;
   }
 
-  const chartDefs = new Map();      // `${host}|${title}` -> definition, for the enlarged view
-  let expanded = null;              // key of the chart currently shown enlarged, survives refreshes
+  const chartDefs = new Map();      // `${host}|${title}` -> { hostName, spec }, for the enlarged view
+  let expanded = null;              // { key, range, from, to } while a chart is enlarged; survives refreshes
   const modalPlots = [];
 
-  function chart(container, hostName, title, sub, t, seriesDefs, opts) {
-    const key = `${hostName}|${title}`;
-    const def = { hostName, title, sub, t, seriesDefs, opts, key };
-    chartDefs.set(key, def);
+  function chart(container, hostName, spec, view) {
+    const key = `${hostName}|${spec.title}`;
+    chartDefs.set(key, { hostName, spec });
     const box = el("div", "chart");
     const head = el("div", "chart-head");
-    head.append(el("h3", null, title));
+    head.append(el("h3", null, spec.title));
+    const C = SERIES();
+    const seriesDefs = spec.build(view.pts, C, groupsIn(view.pts));
     const hasData = seriesDefs.length && seriesDefs.some(s => s.data.some(v => v != null));
     if (hasData) {
       const btn = el("button", "expand", "⤢");
-      btn.type = "button"; btn.title = "Enlarge this chart"; btn.setAttribute("aria-label", `Enlarge ${title}`);
+      btn.type = "button"; btn.title = "Enlarge this chart"; btn.setAttribute("aria-label", `Enlarge ${spec.title}`);
       btn.dataset.key = `expand.${key}`;
       btn.onclick = () => openModal(key);
       head.append(btn);
     }
     box.append(head);
+    const sub = spec.sub(view.step);
     if (sub) box.append(el("p", "sub", sub));
     container.appendChild(box);
     if (!hasData) { box.append(el("div", "empty", "No data")); return; }
-    mountPlot(box, def, 200, plots);
+    mountPlot(box, { hostName, spec, seriesDefs, view }, 200, plots);
     box.querySelector(".plot").ondblclick = () => openModal(key);
-    if (expanded === key) openModal(key);   // re-render while enlarged: refresh the enlarged copy too
+    if (expanded?.key === key) openModal(key, expanded);   // re-render while enlarged: refresh the enlarged copy too
   }
 
-  /** Build a uPlot with legend chips into `box`; returns nothing, registers the instance in `list`. */
+  /** Build a uPlot with legend chips into `box` and register the instance in `list`. */
   function mountPlot(box, def, height, list) {
-    const { hostName, title, t, seriesDefs, opts } = def;
+    const { hostName, spec, seriesDefs, view } = def;
+    const opts = spec;
     const plotEl = el("div", "plot"); plotEl.style.height = `${height}px`;
     box.append(plotEl);
     const legend = el("div", "legend");
     const fmt = opts.fmt || (v => !finite(v) ? "–" : `${+v.toFixed(v >= 100 ? 0 : 1)}${opts.unit || ""}`);
     const tip = el("div", "u-tooltip"); tip.style.display = "none";
     box.style.position = "relative"; box.appendChild(tip);
-    const font = `${height > 300 ? 12 : 11}px Roboto, system-ui`;
+    const big = height > 300;
+    const font = `${big ? 12 : 11}px Roboto, system-ui`;
 
     const u = new uPlot({
       width: plotEl.clientWidth || 340, height,
       cursor: { points: { size: 8 }, drag: { x: false, y: false } },
       legend: { show: false },
-      // x-axis always spans the selected window, however much data exists yet
-      scales: { x: { time: true, range: () => [Math.floor(nowS()) - RANGE_SECONDS[range], Math.floor(nowS())] }, y: { range: (u, min, max) => [0, opts.max ?? (!finite(max) || max <= 0 ? 1 : max * 1.1)] } },
+      // the x-axis always spans the requested window, however much data exists in it
+      scales: { x: { time: true, range: () => [view.x0, view.x1] }, y: { range: (u, min, max) => [0, opts.max ?? (!finite(max) || max <= 0 ? 1 : max * 1.1)] } },
       axes: [
         { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { stroke: css("--axis"), width: 1 }, font },
-        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { show: false }, size: height > 300 ? 64 : 56, gap: 6, font,
+        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { show: false }, size: big ? 64 : 56, gap: 6, font,
           values: (u, vals) => vals.map(v => opts.fmt ? opts.fmt(v) : opts.unit === "%" ? `${v}%` : `${v}`) },
       ],
-      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: height > 300 ? 2.5 : 2, spanGaps: false, points: { size: 6, fill: s.color } }))],
+      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: big ? 2.5 : 2, spanGaps: false, points: { size: 6, fill: s.color } }))],
       hooks: {
         setCursor: [u => {
           const i = u.cursor.idx;
@@ -493,12 +509,12 @@
           tip.style.left = `${Math.min(u.cursor.left + 60, box.clientWidth - tip.offsetWidth - 8)}px`;
         }],
       },
-    }, [t, ...seriesDefs.map(s => s.data)], plotEl);
+    }, [view.t, ...seriesDefs.map(s => s.data)], plotEl);
     list.push(u);
 
     if (seriesDefs.length > 1) {
       // per-host, per-chart visibility, remembered in this browser and shared with the enlarged view
-      const key = `status.series.${hostName}.${title}`;
+      const key = `status.series.${hostName}.${spec.title}`;
       let hidden = new Set();
       try { hidden = new Set(JSON.parse(store.get(key) || "[]")); } catch (_) { /* ignore */ }
       const save = () => store.set(key, JSON.stringify([...hidden]));
@@ -515,7 +531,7 @@
       seriesDefs.forEach((s, k) => {
         const sp = el("button", "chip", s.label);
         sp.type = "button";
-        sp.dataset.key = `${key}.${s.label}${height > 300 ? ".big" : ""}`;
+        sp.dataset.key = `${key}.${s.label}${big ? ".big" : ""}`;
         sp.style.setProperty("--c", s.color);
         sp.title = "Click to show or hide · double-click to show only this series";
         sp.onclick = () => { hidden.has(s.label) ? hidden.delete(s.label) : hidden.add(s.label); apply(); };
@@ -538,29 +554,106 @@
     observers.push(ro);
   }
 
-  // ------------------------------------------------------------ enlarged view
-  function openModal(key) {
+  // ------------------------------------------------------------ enlarged view with its own time range
+  /** Series files by range for a host, fetched on demand and cached until the next refresh. */
+  async function seriesFor(hostName, r) {
+    const h = state.hosts.find(x => x.name === hostName);
+    const d = state.data[hostName];
+    if (!h || !d) return null;
+    d.seriesByRange ||= {};
+    if (d.series && d.seriesRange === r) d.seriesByRange[r] = d.series;
+    if (!d.seriesByRange[r]) {
+      const res = await getJSON(`${h.prefix}/series/${r}.json`);
+      d.seriesByRange[r] = res.ok ? res.data : null;
+    }
+    return d.seriesByRange[r];
+  }
+  /** Finest history file that covers a window starting at x0. */
+  const rangeCovering = (x0) => { const age = nowS() - x0; return age <= RANGE_SECONDS["24h"] ? "24h" : age <= RANGE_SECONDS["7d"] ? "7d" : "90d"; };
+  const toLocalInput = (ts) => { const d = new Date(ts * 1000); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+  async function openModal(key, sel) {
     const def = chartDefs.get(key);
     if (!def) return;
-    closeModal(false);
-    expanded = key;
-    const overlay = el("div", "modal"); overlay.id = "modal";
-    overlay.setAttribute("role", "dialog"); overlay.setAttribute("aria-modal", "true"); overlay.setAttribute("aria-label", `${def.title}, enlarged`);
+    const wasOpen = expanded?.key === key;
+    sel = sel || (wasOpen ? expanded : { key, range, from: null, to: null });
+    expanded = { ...sel, key };
+    const { hostName, spec } = def;
+    const now = Math.floor(nowS());
+
+    // resolve the window and the history file for it
+    let x0, x1, fileRange, note = "";
+    if (sel.range === "custom" && finite(sel.from) && finite(sel.to)) {
+      x0 = Math.min(sel.from, sel.to); x1 = Math.max(sel.from, sel.to);
+      if (x1 > now) x1 = now;
+      if (x1 - x0 < 1800) x0 = x1 - 1800;
+      if (x0 < now - RANGE_SECONDS["90d"]) { x0 = now - RANGE_SECONDS["90d"]; note = " · history starts 90 days ago"; }
+      fileRange = rangeCovering(x0);
+    } else {
+      fileRange = RANGE_SECONDS[sel.range] ? sel.range : range;
+      x1 = now; x0 = now - RANGE_SECONDS[fileRange];
+    }
+    const series = await seriesFor(hostName, fileRange);
+    if (expanded?.key !== key) return;                         // closed or changed while loading
+    const view = makeView(series, x0, x1);
+    const C = SERIES();
+    const seriesDefs = spec.build(view.pts, C, groupsIn(view.pts));
+
+    // (re)build the dialog
+    modalPlots.splice(0).forEach(p => p.destroy());
+    let overlay = document.getElementById("modal");
+    if (!overlay) {
+      overlay = el("div", "modal"); overlay.id = "modal";
+      overlay.setAttribute("role", "dialog"); overlay.setAttribute("aria-modal", "true");
+      overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+      document.body.appendChild(overlay);
+      document.body.classList.add("modal-open");
+    }
+    overlay.setAttribute("aria-label", `${spec.title}, enlarged`);
     const dialog = el("div", "modal-box");
-    const head = el("div", "chart-head");
+    const head = el("div", "chart-head modal-head");
     const titles = el("div");
-    titles.append(el("h3", null, def.title), el("p", "sub", `${def.hostName}${def.sub ? ` · ${def.sub}` : ""} · ${range === "24h" ? "last 24 hours" : range === "7d" ? "last 7 days" : "last 90 days"}`));
+    const windowText = sel.range === "custom" ? `${fmtTime(x0)} – ${fmtTime(x1)}` : RANGE_LABEL[fileRange];
+    titles.append(el("h3", null, spec.title), el("p", "sub", `${hostName} · ${windowText} · ${STEP_LABEL(view.step)}${note}${spec.sub(view.step) ? ` · ${spec.sub(view.step)}` : ""}`));
+    const controls = el("div", "modal-controls");
+    const rangeCtl = el("div", "range"); rangeCtl.setAttribute("role", "group"); rangeCtl.setAttribute("aria-label", "Time range for this chart");
+    for (const r of ["24h", "7d", "90d", "custom"]) {
+      const b = el("button", null, r === "custom" ? "Custom…" : r.replace("h", " h").replace("d", " d"));
+      b.type = "button"; b.dataset.range = r;
+      const on = sel.range === r;
+      b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on));
+      b.onclick = () => openModal(key, r === "custom" ? { key, range: "custom", from: sel.from ?? now - 6 * 3600, to: sel.to ?? now } : { key, range: r, from: null, to: null });
+      rangeCtl.appendChild(b);
+    }
     const close = el("button", "close", "✕"); close.type = "button"; close.title = "Close (Esc)"; close.setAttribute("aria-label", "Close enlarged chart");
     close.onclick = () => closeModal();
-    head.append(titles, close);
+    controls.append(rangeCtl, close);
+    head.append(titles, controls);
     dialog.append(head);
-    overlay.append(dialog);
-    overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
-    document.body.appendChild(overlay);
-    document.body.classList.add("modal-open");
-    const height = Math.max(320, Math.min(640, Math.floor(window.innerHeight * 0.6)));
-    mountPlot(dialog, def, height, modalPlots);
-    close.focus();
+    if (sel.range === "custom") {
+      const form = el("form", "custom-range");
+      const from = el("input"); from.type = "datetime-local"; from.value = toLocalInput(x0); from.setAttribute("aria-label", "From");
+      const to = el("input"); to.type = "datetime-local"; to.value = toLocalInput(x1); to.setAttribute("aria-label", "To");
+      to.max = from.max = toLocalInput(now); to.min = from.min = toLocalInput(now - RANGE_SECONDS["90d"]);
+      const apply = el("button", "apply", "Apply"); apply.type = "submit";
+      const quick = el("span", "quick");
+      for (const [label, secs] of [["Last 6 h", 6 * 3600], ["Last 2 d", 2 * 86400], ["Last 30 d", 30 * 86400]]) {
+        const q = el("button", "link", label); q.type = "button";
+        q.onclick = () => openModal(key, { key, range: "custom", from: now - secs, to: now });
+        quick.append(q);
+      }
+      form.append(el("label", null, "From"), from, el("label", null, "To"), to, apply, quick);
+      form.onsubmit = (e) => { e.preventDefault(); const f = Date.parse(from.value) / 1000, t = Date.parse(to.value) / 1000; if (finite(f) && finite(t)) openModal(key, { key, range: "custom", from: f, to: t }); };
+      dialog.append(form);
+    }
+    overlay.replaceChildren(dialog);
+    const height = Math.max(320, Math.min(640, Math.floor(window.innerHeight * 0.55)));
+    if (!seriesDefs.length || !seriesDefs.some(s => s.data.some(v => v != null))) {
+      dialog.append(el("p", "empty", series ? "No data in this window." : `Could not load the ${fileRange} history.`));
+    } else {
+      mountPlot(dialog, { hostName, spec, seriesDefs, view }, height, modalPlots);
+    }
+    if (!wasOpen) close.focus();
   }
 
   function closeModal(clearState = true) {
@@ -568,7 +661,7 @@
     document.getElementById("modal")?.remove();
     document.body.classList.remove("modal-open");
     if (clearState) {
-      const key = expanded; expanded = null;
+      const key = expanded?.key; expanded = null;
       if (key) document.querySelector(`[data-key="${CSS.escape(`expand.${key}`)}"]`)?.focus();
     }
   }
