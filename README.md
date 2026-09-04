@@ -36,6 +36,15 @@ Only aggregates leave a host: request counts, status-class counts and latency
 percentiles per URL group. No client IPs, user agents or full URLs are uploaded.
 The page is public, so nothing in a snapshot should be sensitive.
 
+## Using the page
+
+- The 24 h / 7 d / 90 d buttons set the range for the whole page; the choice is remembered per browser.
+- Click the ⤢ icon on any chart (or double-click the plot) to enlarge it. The enlarged view has its own
+  range control plus a custom From/To window; it uses the finest history that covers the window and
+  says which resolution it is showing. "Download CSV" exports the shown window; "Copy link" copies a URL
+  that reopens exactly that chart and window (the address bar always reflects the current view).
+- The ◐ button cycles the colour theme: follow the system, light, dark.
+
 ## Deploying the site (once)
 
 ```bash
