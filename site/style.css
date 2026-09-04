@@ -67,6 +67,16 @@ dl.hostinfo dt { color:var(--muted); } dl.hostinfo dd { margin:0; font-variant-n
 .charts { display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:14px; }
 .chart { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 12px 6px; overflow:hidden; }
 .chart h3 { margin-bottom:2px; }
+.chart-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+.expand, .close { font: inherit; font-size:15px; line-height:1; color:var(--muted); background:transparent; border:1px solid transparent; border-radius:6px; padding:2px 6px; cursor:pointer; }
+.expand:hover, .close:hover, .expand:focus-visible, .close:focus-visible { color:var(--brand); border-color:var(--border); background:var(--surface); }
+.chart .plot { cursor: zoom-in; }
+.modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:24px; z-index:100; }
+.modal-box { background:var(--surface); color:var(--ink); border:1px solid var(--border); border-radius:12px; padding:16px 18px 10px; width:min(1200px, 100%); max-height:100%; overflow:auto; box-shadow:0 12px 40px rgba(0,0,0,.35); position:relative; }
+.modal-box h3 { font-size:15px; }
+.modal-box .sub { margin:2px 0 8px; }
+.modal-box .plot { cursor: crosshair; }
+body.modal-open { overflow:hidden; }
 .chart .sub { color:var(--muted); font-size:12px; margin:0 0 6px; }
 .chart .plot { width:100%; height:200px; }
 .legend { display:flex; flex-wrap:wrap; gap:4px 6px; font-size:12px; color:var(--ink-2); margin:6px 0 4px; align-items:center; }

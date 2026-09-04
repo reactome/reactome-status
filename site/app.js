@@ -132,6 +132,7 @@
     plots.splice(0).forEach(p => p.destroy());
     observers.splice(0).forEach(o => o.disconnect());
     const focusKey = document.activeElement?.dataset?.key || null;
+    if (expanded && !chartDefs.has(expanded)) closeModal();
     const sections = [];
     let worst = "unknown";
     const rank = { unknown: 0, good: 1, warn: 2, bad: 3 };
@@ -423,33 +424,57 @@
     return out;
   }
 
+  const chartDefs = new Map();      // `${host}|${title}` -> definition, for the enlarged view
+  let expanded = null;              // key of the chart currently shown enlarged, survives refreshes
+  const modalPlots = [];
+
   function chart(container, hostName, title, sub, t, seriesDefs, opts) {
+    const key = `${hostName}|${title}`;
+    const def = { hostName, title, sub, t, seriesDefs, opts, key };
+    chartDefs.set(key, def);
     const box = el("div", "chart");
-    box.append(el("h3", null, title));
-    if (sub) box.append(el("p", "sub", sub));
-    const plotEl = el("div", "plot");
-    box.append(plotEl);
-    container.appendChild(box);
-    if (!seriesDefs.length || !seriesDefs.some(s => s.data.some(v => v != null))) {
-      plotEl.className = "empty"; plotEl.textContent = "No data"; return;
+    const head = el("div", "chart-head");
+    head.append(el("h3", null, title));
+    const hasData = seriesDefs.length && seriesDefs.some(s => s.data.some(v => v != null));
+    if (hasData) {
+      const btn = el("button", "expand", "⤢");
+      btn.type = "button"; btn.title = "Enlarge this chart"; btn.setAttribute("aria-label", `Enlarge ${title}`);
+      btn.dataset.key = `expand.${key}`;
+      btn.onclick = () => openModal(key);
+      head.append(btn);
     }
+    box.append(head);
+    if (sub) box.append(el("p", "sub", sub));
+    container.appendChild(box);
+    if (!hasData) { box.append(el("div", "empty", "No data")); return; }
+    mountPlot(box, def, 200, plots);
+    box.querySelector(".plot").ondblclick = () => openModal(key);
+    if (expanded === key) openModal(key);   // re-render while enlarged: refresh the enlarged copy too
+  }
+
+  /** Build a uPlot with legend chips into `box`; returns nothing, registers the instance in `list`. */
+  function mountPlot(box, def, height, list) {
+    const { hostName, title, t, seriesDefs, opts } = def;
+    const plotEl = el("div", "plot"); plotEl.style.height = `${height}px`;
+    box.append(plotEl);
     const legend = el("div", "legend");
     const fmt = opts.fmt || (v => !finite(v) ? "–" : `${+v.toFixed(v >= 100 ? 0 : 1)}${opts.unit || ""}`);
     const tip = el("div", "u-tooltip"); tip.style.display = "none";
     box.style.position = "relative"; box.appendChild(tip);
+    const font = `${height > 300 ? 12 : 11}px Roboto, system-ui`;
 
     const u = new uPlot({
-      width: plotEl.clientWidth || 340, height: 200,
+      width: plotEl.clientWidth || 340, height,
       cursor: { points: { size: 8 }, drag: { x: false, y: false } },
       legend: { show: false },
       // x-axis always spans the selected window, however much data exists yet
       scales: { x: { time: true, range: () => [Math.floor(nowS()) - RANGE_SECONDS[range], Math.floor(nowS())] }, y: { range: (u, min, max) => [0, opts.max ?? (!finite(max) || max <= 0 ? 1 : max * 1.1)] } },
       axes: [
-        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { stroke: css("--axis"), width: 1 }, font: "11px Roboto, system-ui" },
-        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { show: false }, size: 56, gap: 6, font: "11px Roboto, system-ui",
+        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { stroke: css("--axis"), width: 1 }, font },
+        { stroke: css("--muted"), grid: { stroke: css("--grid"), width: 1 }, ticks: { show: false }, size: height > 300 ? 64 : 56, gap: 6, font,
           values: (u, vals) => vals.map(v => opts.fmt ? opts.fmt(v) : opts.unit === "%" ? `${v}%` : `${v}`) },
       ],
-      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: 2, spanGaps: false, points: { size: 6, fill: s.color } }))],
+      series: [{}, ...seriesDefs.map(s => ({ label: s.label, stroke: s.color, width: height > 300 ? 2.5 : 2, spanGaps: false, points: { size: 6, fill: s.color } }))],
       hooks: {
         setCursor: [u => {
           const i = u.cursor.idx;
@@ -469,10 +494,10 @@
         }],
       },
     }, [t, ...seriesDefs.map(s => s.data)], plotEl);
-    plots.push(u);
+    list.push(u);
 
     if (seriesDefs.length > 1) {
-      // per-host, per-chart visibility, remembered in this browser
+      // per-host, per-chart visibility, remembered in this browser and shared with the enlarged view
       const key = `status.series.${hostName}.${title}`;
       let hidden = new Set();
       try { hidden = new Set(JSON.parse(store.get(key) || "[]")); } catch (_) { /* ignore */ }
@@ -490,7 +515,7 @@
       seriesDefs.forEach((s, k) => {
         const sp = el("button", "chip", s.label);
         sp.type = "button";
-        sp.dataset.key = `${key}.${s.label}`;
+        sp.dataset.key = `${key}.${s.label}${height > 300 ? ".big" : ""}`;
         sp.style.setProperty("--c", s.color);
         sp.title = "Click to show or hide · double-click to show only this series";
         sp.onclick = () => { hidden.has(s.label) ? hidden.delete(s.label) : hidden.add(s.label); apply(); };
@@ -499,19 +524,55 @@
         legend.appendChild(sp);
       });
       const tools = el("span", "legend-tools");
-      const all = el("button", "link", "all"); all.type = "button"; all.dataset.key = `${key}.all`;
+      const all = el("button", "link", "all"); all.type = "button";
       all.onclick = () => { hidden = new Set(); apply(); };
-      const none = el("button", "link", "none"); none.type = "button"; none.dataset.key = `${key}.none`;
+      const none = el("button", "link", "none"); none.type = "button";
       none.onclick = () => { hidden = new Set(seriesDefs.map(x => x.label)); apply(); };
       tools.append(all, document.createTextNode(" · "), none);
       legend.appendChild(tools);
       box.appendChild(legend);
       apply();
     }
-    const ro = new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height: 200 }));
+    const ro = new ResizeObserver(() => u.setSize({ width: plotEl.clientWidth, height }));
     ro.observe(plotEl);
     observers.push(ro);
   }
+
+  // ------------------------------------------------------------ enlarged view
+  function openModal(key) {
+    const def = chartDefs.get(key);
+    if (!def) return;
+    closeModal(false);
+    expanded = key;
+    const overlay = el("div", "modal"); overlay.id = "modal";
+    overlay.setAttribute("role", "dialog"); overlay.setAttribute("aria-modal", "true"); overlay.setAttribute("aria-label", `${def.title}, enlarged`);
+    const dialog = el("div", "modal-box");
+    const head = el("div", "chart-head");
+    const titles = el("div");
+    titles.append(el("h3", null, def.title), el("p", "sub", `${def.hostName}${def.sub ? ` · ${def.sub}` : ""} · ${range === "24h" ? "last 24 hours" : range === "7d" ? "last 7 days" : "last 90 days"}`));
+    const close = el("button", "close", "✕"); close.type = "button"; close.title = "Close (Esc)"; close.setAttribute("aria-label", "Close enlarged chart");
+    close.onclick = () => closeModal();
+    head.append(titles, close);
+    dialog.append(head);
+    overlay.append(dialog);
+    overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+    document.body.appendChild(overlay);
+    document.body.classList.add("modal-open");
+    const height = Math.max(320, Math.min(640, Math.floor(window.innerHeight * 0.6)));
+    mountPlot(dialog, def, height, modalPlots);
+    close.focus();
+  }
+
+  function closeModal(clearState = true) {
+    modalPlots.splice(0).forEach(p => p.destroy());
+    document.getElementById("modal")?.remove();
+    document.body.classList.remove("modal-open");
+    if (clearState) {
+      const key = expanded; expanded = null;
+      if (key) document.querySelector(`[data-key="${CSS.escape(`expand.${key}`)}"]`)?.focus();
+    }
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && expanded) closeModal(); });
 
   // ------------------------------------------------------------ wiring
   document.querySelectorAll(".range button").forEach(b => {
