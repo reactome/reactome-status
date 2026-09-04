@@ -23,17 +23,19 @@ fi
 LOG_PATH=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("access_log") or {}).get("path",""))' "$CONFIG_SRC")
 if [[ -n "$LOG_PATH" ]]; then
   LOG_DIR=$(dirname "$LOG_PATH")
-  if command -v setfacl >/dev/null; then
-    setfacl -m "u:$SVC_USER:rx" "$LOG_DIR"                 # traverse + list the directory
-    setfacl -d -m "u:$SVC_USER:r" "$LOG_DIR"               # files created later (log rotation) inherit read
-    find "$LOG_DIR" -maxdepth 1 -type f -exec setfacl -m "u:$SVC_USER:r" {} +
+  if command -v setfacl >/dev/null && setfacl -m "u:$SVC_USER:rx" "$LOG_DIR" 2>/dev/null; then   # traverse + list
+    setfacl -d -m "u:$SVC_USER:r" "$LOG_DIR" || true          # files created later (log rotation) inherit read
+    find "$LOG_DIR" -maxdepth 1 -type f -exec setfacl -m "u:$SVC_USER:r" {} + || true
     echo "granted $SVC_USER read access to $LOG_DIR via ACL"
   else
-    echo "WARNING: setfacl not available; add $SVC_USER to the log directory's group manually" >&2
+    echo "WARNING: could not set an ACL on $LOG_DIR (no setfacl, or the filesystem lacks ACL support);" >&2
+    echo "         grant $SVC_USER read access to the log directory another way (e.g. group membership)" >&2
   fi
 fi
 
 # pause the timer while files are replaced so a scheduled run cannot start mid-copy
+# (and make sure it comes back even if a later step fails)
+trap 'systemctl start reactome-status-collector.timer 2>/dev/null || true' ERR
 systemctl stop reactome-status-collector.timer 2>/dev/null || true
 while [[ "$(systemctl show -p ActiveState --value reactome-status-collector.service 2>/dev/null)" == "activating" ]]; do sleep 1; done
 

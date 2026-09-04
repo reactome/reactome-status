@@ -30,7 +30,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 NOW = time.time()
 STATE = {}   # previous run's state, loaded in main()
 
@@ -419,8 +419,9 @@ def access_log_stats(cfg, state):
         path_, status, nbytes, ms = parsed_line
         klass = f"s{status // 100}xx" if 2 <= status // 100 <= 5 else None
         if path_.startswith("/"):
+            had_slash = raw_path_had_slash(path_)
             path_ = posixpath.normpath(path_.split("?", 1)[0])
-            if raw_path_had_slash(parsed_line[0]):
+            if had_slash and not path_.endswith("/"):
                 path_ += "/"  # normpath strips a trailing slash; the group regexes expect it
         target = groups["other"]
         for name, rx in groups_cfg:
@@ -545,8 +546,8 @@ def compact_point(snap):
         p["busy"] = a.get("busy_workers")
         p["idle"] = a.get("idle_workers")
     lg = snap.get("access_log") or {}
-    if lg.get("ok") and lg.get("window_s"):
-        p["win"] = lg["window_s"]
+    if lg.get("ok") and lg.get("total"):
+        p["win"] = lg.get("window_s")     # None after a clock step: hits are kept, per-minute rates are not drawn
         p["log"] = {}
         for name, g in lg["groups"].items():
             p["log"][name] = [g["hits"], g["s2xx"], g["s3xx"], g["s4xx"], g["s5xx"], g["p50_ms"], g["p95_ms"]]
@@ -600,7 +601,9 @@ def _merge_points(t, pts):
         m["win"] = sum(p.get("win") or 0 for p in logs)
         m["log"] = {}
         for k in {k for p in logs for k in p["log"]}:
-            rows = [p["log"][k] for p in logs if k in p["log"]]
+            rows = [p["log"][k] for p in logs if k in p["log"] and isinstance(p["log"][k], list) and len(p["log"][k]) >= 7]
+            if not rows:
+                continue
             hits = sum(r[0] for r in rows)
             m["log"][k] = [hits, sum(r[1] for r in rows), sum(r[2] for r in rows), sum(r[3] for r in rows),
                            sum(r[4] for r in rows),
@@ -670,14 +673,21 @@ def main():
     ap.add_argument("-c", "--config", required=True, help="path to host config JSON")
     ap.add_argument("--no-upload", action="store_true", help="write files locally only")
     ap.add_argument("--print", action="store_true", help="print the snapshot to stdout")
+    ap.add_argument("--state-dir", help="use a private state directory (for manual test runs; never the service's own)")
     args = ap.parse_args()
 
     with open(args.config) as f:
         CONFIG = json.load(f)
+    if args.state_dir:
+        CONFIG["state_dir"] = args.state_dir
     state_dir = CONFIG.get("state_dir", "/var/lib/reactome-status")
-    if os.geteuid() == 0 and os.path.exists(state_dir) and os.stat(state_dir).st_uid != 0:
-        # a root run would leave root-owned files (e.g. today's raw/ directory) that break every later service run
-        log(f"refusing to run as root against {state_dir}; use: sudo -u reactome-status python3 {sys.argv[0]} -c {args.config} ...")
+    if os.geteuid() == 0:
+        # the service never runs as root; a root run leaves root-owned files that break later runs
+        log("refusing to run as root. For a manual test: python3 collector.py -c <config> --state-dir /tmp/status-test --no-upload --print")
+        sys.exit(2)
+    if args.no_upload and not args.state_dir and state_dir == "/var/lib/reactome-status":
+        log("refusing a --no-upload test run against the service's own state directory (it would replace the "
+            "current sample and advance the log offset); add --state-dir /tmp/status-test")
         sys.exit(2)
     os.makedirs(state_dir, exist_ok=True)
     out_dir = os.path.join(state_dir, "out")
@@ -728,29 +738,33 @@ def main():
         db = db_connect(db_path)
         db.execute("SELECT count(*) FROM points").fetchone()
     except sqlite3.DatabaseError as e:
+        if type(e) is not sqlite3.DatabaseError:
+            raise   # OperationalError (e.g. "database is locked") is transient: fail this run, keep the file
         quarantined = f"{db_path}.corrupt-{int(NOW)}"
-        log(f"points.sqlite is unreadable ({e}); moving it to {quarantined} and starting a new history "
+        log(f"points.sqlite is corrupt ({e}); moving it to {quarantined} and starting a new history "
             f"(the raw/ archive on S3 still has every snapshot)")
-        os.replace(db_path, quarantined)
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            if os.path.exists(db_path + suffix):
+                os.replace(db_path + suffix, quarantined + suffix)
         db = db_connect(db_path)
 
-    # O5: a stepped clock must not wipe the history or record negative windows
+    # a stepped clock must never wipe the history: pruning is by row count, not by wall-clock age,
+    # so a bad clock leaves a gap in the charts rather than an empty database
     last_ts = db.execute("SELECT max(ts) FROM points").fetchone()[0]
-    clock_ok = last_ts is None or (last_ts - 3600 <= NOW <= last_ts + 48 * 3600)
-    if not clock_ok:
-        log(f"clock sanity: last stored sample {iso(last_ts)} vs now {iso(NOW)}; skipping history pruning this run")
+    if last_ts is not None and not (last_ts - 3600 <= NOW <= last_ts + 48 * 3600):
+        log(f"clock sanity: last stored sample {iso(last_ts)} vs now {iso(NOW)}")
     lg_ = snap.get("access_log") or {}
     if lg_.get("window_s") is not None and lg_["window_s"] <= 0:
-        lg_["window_s"] = None   # negative/zero window after a clock step: rates for this point are meaningless
+        lg_["window_s"] = None   # negative window after a clock step: counts are kept, the rate is not
+    keep_rows = 91 * 86400 // CONFIG.get("interval_seconds", 300)
     with db:
         slot = int(NOW) - int(NOW) % CONFIG.get("interval_seconds", 300)
         db.execute("DELETE FROM points WHERE ts >= ? AND ts < ?", (slot, slot + CONFIG.get("interval_seconds", 300)))
         db.execute("INSERT OR REPLACE INTO points (ts, json) VALUES (?, ?)", (int(NOW), json.dumps(compact_point(snap))))
         for ev in events:
             db.execute("INSERT INTO events (ts, json) VALUES (?, ?)", (int(NOW), json.dumps(ev)))
-        if clock_ok:
-            db.execute("DELETE FROM points WHERE ts < ?", (int(NOW) - 91 * 86400,))
-            db.execute("DELETE FROM events WHERE ts < ?", (int(NOW) - 91 * 86400,))
+        db.execute("DELETE FROM points WHERE ts < (SELECT ts FROM points ORDER BY ts DESC LIMIT 1 OFFSET ?)", (keep_rows,))
+        db.execute("DELETE FROM events WHERE id < (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET 2000)")
 
     # persist the log offset and service state now that the point is stored, before anything slow:
     # a killed upload must never lead to re-counting the same log window

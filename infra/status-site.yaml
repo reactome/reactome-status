@@ -220,7 +220,7 @@ Resources:
     Properties:
       ResponseHeadersPolicyConfig:
         Name: !Sub "${AWS::StackName}-security-headers"
-        Comment: Security headers incl. a CSP that only allows the page's own files and Google Fonts.
+        Comment: Security headers incl. a CSP that only allows the page's own files (fonts are self-hosted).
         SecurityHeadersConfig:
           ContentSecurityPolicy:
             Override: true
