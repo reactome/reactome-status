@@ -29,7 +29,7 @@ data/<host>/series/7d.json     30-min points, last 7 d
 data/<host>/series/90d.json    6-h points, last 90 d
 data/<host>/events.json        restarts / outages, last 90 d
 raw/<host>/YYYY/MM/DD/HHMM.json  every snapshot, expired after 90 d by S3 lifecycle
-hosts.json, index.html, app.js, style.css, vendor/   the page itself
+site/                          the page itself (served via a CloudFront origin path; hosts cannot write here)
 ```
 
 Only aggregates leave a host: request counts, status-class counts and latency
@@ -75,8 +75,7 @@ To try it without uploading (any user in the `reactome` group), point it at a pr
 directory so it does not touch the installed collector's history:
 
 ```bash
-python3 -c 'import json; c=json.load(open("collector/config/reactome.org.json")); c["state_dir"]="/tmp/status-test"; json.dump(c, open("/tmp/status-test.json","w"))'
-python3 collector/collector.py -c /tmp/status-test.json --no-upload --print
+python3 collector/collector.py -c collector/config/reactome.org.json --state-dir /tmp/status-test --no-upload --print
 ```
 
 ## Adding another host (e.g. curator.reactome.org)
