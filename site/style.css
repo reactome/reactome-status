@@ -15,6 +15,12 @@
     --brand:#5bd4ff; --brand-bright:#20b9e5; --brand-tint:#0f1d23; --brand-tint-2:#14282f;
   }
 }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --brand:#5bd4ff; --brand-bright:#20b9e5; --brand-tint:#0f1d23; --brand-tint-2:#14282f;
+  }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--page); color:var(--ink); font: 14px/1.45 Roboto, system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: inherit; }
@@ -24,6 +30,15 @@ h1 { font-size: 20px; color: var(--brand); font-weight: 500; padding-left: 14px;
 .brand { display:flex; align-items:center; gap:14px; }
 .logo { display:flex; align-items:center; }
 .logo img { height: 40px; width: auto; display:block; }
+.logo .logo-dark { display:none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .logo-light { display:none; } :root:not([data-theme="light"]) .logo-dark { display:block; } }
+:root[data-theme="dark"] .logo-light { display:none; } :root[data-theme="dark"] .logo-dark { display:block; }
+.theme { font: inherit; font-size:16px; line-height:1; width:34px; height:32px; color:var(--ink-2); background:var(--surface); border:1px solid var(--border); border-radius:6px; cursor:pointer; }
+.theme:hover { border-color:var(--brand); color:var(--brand); }
+.modal-tools { display:flex; gap:8px; align-items:center; }
+.btn { font: inherit; font-size:13px; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:5px 10px; cursor:pointer; }
+.btn:hover { border-color:var(--brand); color:var(--brand); }
+.btn.done { color:var(--good); border-color:var(--good); }
 .top-right { display:flex; align-items:center; gap:16px; }
 .pill { padding:4px 12px; border-radius:999px; font-weight:600; font-size:13px; display:inline-flex; gap:6px; align-items:center; border:1px solid var(--border); }
 .pill::before { content:""; width:9px; height:9px; border-radius:50%; background:var(--muted); }
