@@ -19,7 +19,33 @@
     get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* ignore */ } },
   };
-  let range = RANGE_SECONDS[store.get("status.range")] ? store.get("status.range") : "24h";
+  // ------------------------------------------------------------ theme (auto / light / dark)
+  const THEMES = ["auto", "light", "dark"];
+  let theme = THEMES.includes(store.get("status.theme")) ? store.get("status.theme") : "auto";
+  function applyTheme() {
+    if (theme === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme;
+    const b = document.getElementById("theme");
+    if (b) {
+      b.textContent = theme === "auto" ? "◐" : theme === "light" ? "☀" : "☾";
+      b.title = `Theme: ${theme === "auto" ? "follows your system" : theme} (click to change)`;
+    }
+  }
+  applyTheme();
+
+  // ------------------------------------------------------------ shareable state in the URL hash
+  // #range=7d  |  #range=24h&chart=<host>|<title>&crange=custom&from=<unix>&to=<unix>
+  const readHash = () => Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
+  const hashState = readHash();
+  let range = RANGE_SECONDS[hashState.range] ? hashState.range : (RANGE_SECONDS[store.get("status.range")] ? store.get("status.range") : "24h");
+  function writeHash() {
+    const q = new URLSearchParams({ range });
+    if (expanded) {
+      q.set("chart", expanded.key);
+      if (expanded.range && expanded.range !== range) q.set("crange", expanded.range);
+      if (expanded.range === "custom" && finite(expanded.from) && finite(expanded.to)) { q.set("from", String(Math.floor(expanded.from))); q.set("to", String(Math.floor(expanded.to))); }
+    }
+    history.replaceState(null, "", `#${q.toString()}`);
+  }
 
   const plots = [];             // live uPlot instances (destroyed on re-render)
   const observers = [];         // ResizeObservers, disconnected on re-render
@@ -100,6 +126,11 @@
     if (seq !== refreshSeq) return;   // a newer refresh (e.g. range change) superseded this one
     state.hosts.forEach((h, i) => { state.data[h.name] = loaded[i]; });
     render();
+    if (hashState.chart && !expanded && chartDefs.has(hashState.chart)) {
+      const r = hashState.crange === "custom" ? "custom" : (RANGE_SECONDS[hashState.crange] ? hashState.crange : range);
+      openModal(hashState.chart, { key: hashState.chart, range: r, from: +hashState.from || null, to: +hashState.to || null });
+      delete hashState.chart;   // only on first load
+    }
   }
 
   // ------------------------------------------------------------ render
@@ -118,7 +149,7 @@
       return;
     }
     // nothing changed since the last render: refresh only the relative times, keep focus/tooltips
-    const sig = JSON.stringify([range, document.documentElement.dataset.theme || "", state.hosts.map(h => {
+    const sig = JSON.stringify([range, theme, window.matchMedia("(prefers-color-scheme: dark)").matches, state.hosts.map(h => {
       const d = state.data[h.name] || {};
       return [d.latest?.generated_at, d.series?.generated, d.stale, d.error, d.noData, (d.events?.events || []).length];
     })]);
@@ -627,7 +658,19 @@
     }
     const close = el("button", "close", "✕"); close.type = "button"; close.title = "Close (Esc)"; close.setAttribute("aria-label", "Close enlarged chart");
     close.onclick = () => closeModal();
-    controls.append(rangeCtl, close);
+    const tools = el("div", "modal-tools");
+    const csv = el("button", "btn", "Download CSV"); csv.type = "button"; csv.title = "The points shown in this chart, one row per time";
+    csv.onclick = () => downloadCsv(hostName, spec, view, seriesDefs, windowText);
+    const link = el("button", "btn", "Copy link"); link.type = "button"; link.title = "Copy a link that opens this chart with this range";
+    link.onclick = async () => {
+      writeHash();
+      try { await navigator.clipboard.writeText(location.href); link.textContent = "Copied"; link.classList.add("done"); }
+      catch (_) { link.textContent = "Copy failed"; }
+      setTimeout(() => { link.textContent = "Copy link"; link.classList.remove("done"); }, 1800);
+    };
+    tools.append(csv, link);
+    controls.append(rangeCtl, tools, close);
+    writeHash();
     head.append(titles, controls);
     dialog.append(head);
     if (sel.range === "custom") {
@@ -662,8 +705,25 @@
     document.body.classList.remove("modal-open");
     if (clearState) {
       const key = expanded?.key; expanded = null;
+      writeHash();
       if (key) document.querySelector(`[data-key="${CSS.escape(`expand.${key}`)}"]`)?.focus();
     }
+  }
+
+  /** CSV of the visible window: ISO time first, then one column per series (hidden series included). */
+  function downloadCsv(hostName, spec, view, seriesDefs, windowText) {
+    const esc = (v) => { const t = v == null ? "" : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const unit = spec.unit ? ` (${spec.unit.replace("/min", "per min")})` : "";
+    const rows = [["time_utc", ...seriesDefs.map(s => `${s.label}${unit}`)].map(esc).join(",")];
+    view.pts.forEach((p, i) => {
+      if (!p || p.t == null || (p.log === undefined && p.svc === undefined && p.probe_ok === undefined && p.load1 === undefined)) return; // gap marker
+      rows.push([new Date(p.t * 1000).toISOString(), ...seriesDefs.map(s => s.data[i] == null ? "" : s.data[i])].map(esc).join(","));
+    });
+    const blob = new Blob([`# ${hostName} · ${spec.title} · ${windowText} · ${STEP_LABEL(view.step)}\n${rows.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
+    const a = el("a"); a.href = URL.createObjectURL(blob);
+    a.download = `${hostName}-${spec.title}-${new Date(view.x0 * 1000).toISOString().slice(0, 16)}_${new Date(view.x1 * 1000).toISOString().slice(0, 16)}.csv`.replace(/[^\w.\-]+/g, "_");
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && expanded) closeModal(); });
 
@@ -676,10 +736,18 @@
       range = b.dataset.range;
       store.set("status.range", range);
       document.querySelectorAll(".range button").forEach(x => { const a = x === b; x.classList.toggle("active", a); x.setAttribute("aria-pressed", String(a)); });
+      writeHash();
       refresh();
     };
   });
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.hosts.length) { state.lastSig = null; render(); } });
+  document.getElementById("theme").onclick = () => {
+    theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+    store.set("status.theme", theme);
+    applyTheme();
+    state.lastSig = null; render();          // charts read their colours from CSS variables
+  };
+  writeHash();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (theme === "auto" && state.hosts.length) { state.lastSig = null; render(); } });
   refresh();
   setInterval(refresh, REFRESH_MS);
 })();

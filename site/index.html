@@ -15,10 +15,8 @@
 <header class="top">
   <div class="brand">
     <a href="https://reactome.org" class="logo" aria-label="Reactome home">
-      <picture>
-        <source srcset="assets/reactome-logo-negative.svg" media="(prefers-color-scheme: dark)">
-        <img src="assets/reactome-logo-positive.svg" alt="Reactome" width="172" height="40">
-      </picture>
+      <img class="logo-light" src="assets/reactome-logo-positive.svg" alt="Reactome" width="172" height="40">
+      <img class="logo-dark" src="assets/reactome-logo-negative.svg" alt="Reactome" width="172" height="40">
     </a>
     <h1>Status</h1>
   </div>
@@ -29,6 +27,7 @@
       <button data-range="7d">7 d</button>
       <button data-range="90d">90 d</button>
     </div>
+    <button id="theme" class="theme" type="button" title="Theme: follows your system (click to change)" aria-label="Switch colour theme">◐</button>
   </div>
 </header>
 
