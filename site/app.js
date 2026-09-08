@@ -319,7 +319,7 @@
       let detail = "";
       if (e.kind === "restart") {
         const rec = all.find(x => x.kind === "healthy" && x.service === e.service && x.started_at === e.started_at);
-        detail = rec && finite(rec.healthy_within_s) ? `healthy within ${fmtDur(rec.healthy_within_s)} (checked every 5 min)` : "not yet seen healthy";
+        detail = rec && finite(rec.healthy_within_s) ? `healthy within ${fmtDur(rec.healthy_within_s)} (checked every ${fmtDur(interval)})` : "not yet seen healthy";
       } else if (e.kind === "down") {
         const rec = all.filter(x => x.kind === "healthy" && x.service === e.service && x.ts > e.ts).pop();
         detail = rec ? `back up by ${fmtTime(parseTs(rec.ts))} (state was ${e.state})` : `still down · state: ${e.state}`;

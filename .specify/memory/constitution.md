@@ -20,16 +20,21 @@ to a moment it could not have reported for. Percentages are floored, never round
 
 ### III. Only aggregates leave a host
 Snapshots contain counts, percentiles, states and latencies. No client IP address, user agent,
-cookie, request URL, file path, hostname, port number or software version is ever uploaded.
-Anything that reaches the bucket is public. Treat every field as if it will be read by a
-stranger, because it will.
+cookie, request URL, file path, internal hostname, port number or version of a monitored
+service is ever uploaded. The deliberate exceptions are the host's public DNS name, the
+collector's own version (so deploys can be verified) and the Reactome release number, which is
+public information. Anything that reaches the bucket is public. Treat every field as if it will
+be read by a stranger, because it will.
 
 ### IV. Least privilege on production
 The collector runs as its own system user and group, sandboxed by systemd, with read access to
 exactly the log directory it parses (granted by ACL, never by joining a group that owns other
 files). It MUST NOT be in the `docker` group or any group that exposes credentials. It never
-runs as root and refuses to. Its cloud permission is write-only to its own prefixes. A change
-that widens any of this needs a written justification in the spec.
+runs as root and refuses to. Its cloud permission is limited to putting and listing objects
+under the upload prefixes (`data/` and `raw/`), never reading, deleting or touching the page.
+Scoping to the host's own prefix is the goal; where hosts share an instance role this is not
+yet achievable and is recorded as an accepted exception in the baseline tasks. A change that
+widens any of this needs a written justification in the spec.
 
 ### V. Uploaded content is inert
 The hosts' upload permission is shared and therefore untrusted. Everything under the upload
@@ -51,8 +56,9 @@ step that can hang).
 ### VIII. Fail loud, recover alone
 A failure exits non-zero and appears in the journal. A corrupt local database is quarantined
 and a fresh one started; a wrong clock leaves a gap, never a wipe; output files are written
-atomically; history is pruned by row count, never by wall-clock age. The next run must always
-be able to succeed without a human.
+atomically; the sample history is pruned by row count, never by wall-clock age (only the local
+copies of already-uploaded raw snapshots and the S3 archive expire by age). The next run must
+always be able to succeed without a human.
 
 ### IX. Honest numbers
 Every figure states its window and resolution ("30-minute averages", "in 4 min 59 s").
@@ -76,17 +82,20 @@ idempotent and prints the installed version.
   Adding a host is a config file, a line in `hosts.json` and an install, never new code paths.
 - **Retention**: 91 days of 5-minute samples locally, 90 days of raw snapshots in S3, 30 days
   of noncurrent object versions.
-- **Public repository**: no host survey, credentials, account-specific identifiers or
-  operational detail beyond what the code itself requires.
+- **Public repository**: no host survey results, credentials, account identifiers, instance
+  names, login names, service versions, port inventories or hardware sizes; operational detail
+  only where the code itself requires it (for example an IAM role name used as a parameter
+  default).
 - **Privileged steps**: anything needing root on a production host is a script the operator
   runs; the tooling stages it and prints the exact command.
 
 ## Development Workflow
 
-- Small fixes go straight to a commit with a test where one is practical.
-- Anything that adds a host type, a data source, a new page section or a new AWS resource
-  gets a specification (`/speckit-specify`) and a plan (`/speckit-plan`) first, checked
-  against this constitution.
+- A specification (`/speckit-specify`) and plan (`/speckit-plan`) are required for any change
+  that alters **what is uploaded**, **who may upload**, **how availability is computed**, or that
+  adds a data source, a page section, a probe kind or an AWS resource.
+- Everything else, including adding a host that needs only a config file and a host-list entry,
+  goes straight to a commit with a test where one is practical.
 - Periodic adversarial reviews with fresh eyes (security, operations, numerical correctness)
   are part of the process; findings are verified with a reproduction before being fixed.
 - Every deploy of the page is followed by a live render check; every install of the collector
@@ -99,4 +108,4 @@ requires either changing the code or amending this document, with the amendment 
 the version line below and the reason in the commit message. Reviews check compliance with
 the principles explicitly.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-09-08
+**Version**: 1.1.0 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-09-08 (III exceptions stated, IV and VIII made accurate, workflow gate clarified)

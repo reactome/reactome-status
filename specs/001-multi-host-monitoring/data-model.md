@@ -38,8 +38,8 @@ Existing schema; fields relevant to multi-host:
 
 | Host | Role | Policy |
 |---|---|---|
-| reactome.org, curator.reactome.org, … | `EC2CloudwatchAgentRole` (shared) | existing `status.reactome.org-collector-upload` (`data/*`, `raw/*`) — documented exception |
-| Plant Reactome | its own instance role | new per-host policy: `data/<host>/*`, `raw/<host>/*`, scoped `ListBucket` |
+| hosts sharing the production role (reactome.org, curator.reactome.org, …) | shared production role | existing `status.reactome.org-collector-upload` (`data/*`, `raw/*`) — documented exception |
+| Plant Reactome host | its own instance role | new per-host policy: `data/<host>/*`, `raw/<host>/*`, scoped `ListBucket` |
 | CPWS (if in scope) | its own instance role | per-host policy |
 
 ## Page state additions

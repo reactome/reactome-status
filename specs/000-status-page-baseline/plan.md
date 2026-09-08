@@ -20,7 +20,7 @@ planned work; the tasks file lists what was built, all complete.
 
 **Testing**: local fake-log runs with `--state-dir`; headless Chrome renders against real and adversarial data; dry runs on production with a private state directory; six adversarial review rounds with reproductions
 
-**Target Platform**: systemd Linux EC2 host with instance role; CloudFront with ACM certificate at status.reactome.org
+**Target Platform**: systemd Linux EC2 host with an instance role; CloudFront with ACM certificate at status.reactome.org
 
 **Project Type**: monitoring agent + static page + IaC
 
@@ -65,4 +65,4 @@ docs/PLAN.md                        # original design notes
 - One sample per 5-minute slot; history pruned by row count; atomic file writes; corruption quarantined.
 - Uploads: `aws s3 cp --recursive` for live files (unconditional), `aws s3 sync` per day directory for the raw archive.
 - CloudFront: page from `site/` via OriginPath; `data/*` and `raw/*` from a second origin with forced JSON content type, sandbox CSP and a 5-minute maximum TTL; path-only cache key; page CSP with no third-party origins.
-- Collector user: own group; log access via ACL; systemd sandboxing.
+- Collector user: own group; log access via ACL; systemd sandboxing (capabilities dropped, read-only system, private tmp, restricted address families and syscall architectures).

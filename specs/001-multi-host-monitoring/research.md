@@ -8,8 +8,8 @@
 - **Alternatives considered**: bucket per host (rejected: cost and operational overhead); one prefix with host as a field (rejected: no per-host IAM scoping possible).
 
 ### Per-host upload policy where the host has its own role
-- **Decision**: for each host with its own instance role, attach a managed policy limited to that host's two prefixes. Hosts that share `EC2CloudwatchAgentRole` (hosts sharing the production role) keep the existing shared policy.
-- **Rationale**: constitution IV. Splitting the shared role would mean changing the instance profile of three running production machines, which is a separate, riskier change.
+- **Decision**: for each host with its own instance role, attach a managed policy limited to that host's two prefixes. Hosts that share the production instance role keep the existing shared policy.
+- **Rationale**: constitution IV. Splitting the shared role would mean changing the instance profile of running production machines, which is a separate, riskier change.
 - **Alternatives considered**: bucket policy `Deny` with a condition on the source instance (rejected: `aws:SourceInstanceARN` is not available for role-session uploads via the CLI in all paths and is brittle); one role per host created by this stack (deferred: requires instance profile swaps on live machines).
 
 ### Config-only host differences
@@ -33,12 +33,12 @@
 
 | Host | OS / Python / AWS CLI | Instance role | Services & ports | Log path & format | `%{ms}T`? | Notes |
 |---|---|---|---|---|---|---|
-| curator.reactome.org | ? | shares `EC2CloudwatchAgentRole` (known) | ? | ? | ? | |
-| Plant Reactome (`plant-reactome-host`) | `<login>` | ? | ? | ? | ? | `useradd --system` and `setfacl` availability to confirm |
+| curator.reactome.org | ? | shares the production role | ? | ? | ? | |
+| Plant Reactome host | ? | own role (assumed) | ? | ? | ? | `useradd --system` and `setfacl` availability to confirm |
 | CPWS | ? | ? | ? | ? | ? | in scope only if systemd + Apache-style log |
 
 ## Risks
 
-- Amazon Linux differences: `python3` may be 3.9 (fine), AWS CLI may live in `/usr/bin` or `/usr/local/bin` (unit PATH covers both), `acl` package may need installing for `setfacl`.
+- Distribution differences: `python3` may be older (3.8+ is fine), the AWS CLI may live in `/usr/bin` or `/usr/local/bin` (the unit's PATH covers both), the `acl` package may need installing for `setfacl`.
 - A host's log directory may not be group- or ACL-readable without changing ownership of an application directory; the install script must report this rather than guess.
 - The page's colour assignment for unknown log groups is by hash; two new groups may land on the same palette slot. Acceptable for a first release; revisit if it happens.

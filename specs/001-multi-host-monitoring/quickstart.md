@@ -23,8 +23,9 @@ Commit and push; pull the repository on the host.
 ## 3. Grant upload rights
 
 - If the host uses `EC2CloudwatchAgentRole`, nothing to do: the shared policy already applies.
-- Otherwise add the host and its role name to the stack's `HostRoles` parameter and run
-  `infra/deploy.sh stack`; the stack attaches a policy limited to `data/<host>/*` and `raw/<host>/*`.
+- Otherwise add `<host>=<role name>` to the `HOST_ROLES` value used by `infra/deploy.sh stack`
+  (it becomes the stack's `HostRoles` parameter); the stack attaches a policy limited to
+  `data/<host>/*` and `raw/<host>/*`.
 
 ## 4. Dry-run, then install
 
@@ -33,8 +34,9 @@ python3 collector/collector.py -c collector/config/<host>.json --state-dir /tmp/
 sudo collector/install.sh collector/config/<host>.json
 ```
 
-The dry run must show `ok` for the checks you expect and zero unparsed log lines. The install
-prints the ACL grant and the installed version; the first upload happens immediately.
+Run the dry run twice a minute apart: the first run only records the log position, the second
+must show `ok` for the checks you expect and zero unparsed log lines. The install prints the
+ACL grant and the installed version; the first upload happens immediately.
 
 ## 5. Register the host on the page
 
@@ -45,7 +47,7 @@ Add an entry to `site/hosts.json` with `name`, `title`, `prefix` and `order`, th
 
 - `https://status.reactome.org/data/<host>/latest.json` returns the new snapshot.
 - The page shows the host's section and the summary row lists it.
-- After 30 minutes the 7-day series exists; after a day, the uptime figures are meaningful.
+- The three series files exist after the first run (the coarse ones are then rebuilt every 30 minutes); after a day, the uptime figures are meaningful.
 
 ## Removing a host
 

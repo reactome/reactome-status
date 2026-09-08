@@ -85,9 +85,9 @@ An operator installs, upgrades, tests and removes the collector on a production 
 
 - **FR-001**: The collector MUST record systemd unit state and start time, HTTP and TCP health checks with latency, Apache worker counts, access-log aggregates per URL group (hits, status classes, p50/p95/max response time), and host load, memory and disk, every five minutes.
 - **FR-002**: The collector MUST parse only the bytes appended to the access log since its previous run, survive rotation without losing the tail of the previous file, and never re-count a window after being killed.
-- **FR-003**: The collector MUST publish a current snapshot, 24-hour (5-minute), 7-day (30-minute) and 90-day (6-hour) series, and an events list, and archive every snapshot for 90 days.
+- **FR-003**: The collector MUST publish a current snapshot, 24-hour (5-minute), 7-day (30-minute) and 90-day (6-hour) series, and a list of the most recent 500 events, and archive every snapshot for 90 days.
 - **FR-004**: The collector MUST detect service restarts and record the time until the associated health check first passed, and MUST treat configured expected restarts as routine.
-- **FR-005**: Published data MUST contain no client IP addresses, user agents, URLs, file paths, hostnames, ports or software versions.
+- **FR-005**: Published data MUST contain no client IP addresses, user agents, URLs, file paths, internal hostnames, ports or versions of monitored services (the host's public name, the collector's version and the public release number are the stated exceptions).
 - **FR-006**: The page MUST treat a snapshot older than one interval plus slack as a warning and older than two intervals plus slack as the host being down.
 - **FR-007**: The page MUST compute availability with missing expected samples counted as down, time-weighted, clipped to the selected range, floored to two decimals and never rounded up to 100%.
 - **FR-008**: The page MUST render every chart's x-axis over exactly the selected window regardless of how much data exists.

@@ -32,7 +32,7 @@ An operator brings a new host under monitoring by writing one config file descri
 
 **Why this priority**: Three hosts are planned; the design must make the fourth cheap.
 
-**Independent Test**: Follow the documented steps on a host with a different service set and log format; the host appears on the page within ten minutes with no change to collector or page code.
+**Independent Test**: Follow the documented steps on a host with a different service set and log format; the host appears on the page within ten minutes, needing only a config file, a host-list entry and an install.
 
 **Acceptance Scenarios**:
 
@@ -71,8 +71,8 @@ A staff member enlarges a chart and can switch it to show the same measure for a
 
 ### Edge Cases
 
-- Two hosts with the same service name (for example `neo4j` on production and curator): keys are per host and colours are per host; nothing is merged.
-- A host with a different reporting interval: staleness thresholds and expected-sample counts follow that host's interval.
+- Two hosts with the same service name: keys are per host and colours are per host; nothing is merged.
+- A host with a different reporting interval: staleness thresholds, expected-sample counts and the "checked every N min" wording in the events table follow that host's interval.
 - A host whose collector version lags: the page tolerates missing fields introduced later.
 - The host list itself fails to load: the page says so and does not claim all systems are operational (already delivered in the baseline; no task).
 - A host removed from the list: its data stops being shown but its history stays in the bucket until the lifecycle rule expires it.
@@ -88,7 +88,7 @@ A staff member enlarges a chart and can switch it to show the same measure for a
 - **FR-005**: The collector MUST run unchanged on every host; every per-host difference MUST be expressed in the host's config file (services, checks, log path and groups, expected restarts, interval).
 - **FR-006**: The install script MUST verify its prerequisites (systemd, Python 3.8+, AWS CLI, an instance role with upload rights) and stop with a clear message if one is missing.
 - **FR-007**: Each host MUST be able to write only under `data/<host>/` and `raw/<host>/`, except where hosts already share an instance role; that exception MUST be documented in the plan.
-- **FR-008**: Adding a host MUST NOT require changes to page code or to the CloudFormation template beyond naming the host's role in a parameter.
+- **FR-008**: Once this feature is delivered, adding a host MUST need only a config file, a host-list entry, an install, and (for a host with its own role) naming that role in a stack parameter; no collector, page or template code changes.
 - **FR-009**: The documentation MUST contain a step-by-step "add a host" procedure that a colleague can follow without prior knowledge of the project.
 - **FR-010**: The enlarged chart view SHOULD offer a host selector when more than one host is listed (P3).
 
@@ -105,11 +105,11 @@ A staff member enlarges a chart and can switch it to show the same measure for a
 - **SC-001**: curator.reactome.org and Plant Reactome appear on the page with complete sections within one working session each, following only the documented procedure.
 - **SC-002**: The page with four hosts loads and renders in under 3 seconds on a 10 Mbit/s, 50 ms connection (measured headless with network throttling).
 - **SC-003**: An upload from one host to another host's prefix is denied for every host that has its own role.
-- **SC-004**: No change to collector or page code is needed to add the third and later hosts.
+- **SC-004**: The third and later hosts are added with a config file, a host-list entry, an install and at most a stack parameter; no code changes.
 
 ## Assumptions
 
-- Plant Reactome runs on its own instance with its own instance role; the curator server shares the production role (the documented exception).
+- The Plant Reactome host has its own instance role; the curator server shares the production role (the documented exception).
 - CPWS is included only if it runs on a host Reactome administers with systemd and an Apache-style log; otherwise it is out of scope for this feature.
 - Each new host is surveyed read-only before its config is written; the survey stays out of the public repository.
 - Alerting remains out of scope.

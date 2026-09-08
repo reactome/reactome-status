@@ -20,7 +20,7 @@ description: "Tasks for the multi-host monitoring feature"
 ## Phase 1: Setup
 
 - [ ] T001 Read-only survey of curator.reactome.org per quickstart step 1; record results in an internal note (not in the repo); fill the row in research.md with non-sensitive facts only (OS family, has `%{ms}T`, shares role yes/no)
-- [ ] T002 [P] Read-only survey of the Plant Reactome host (`plant-reactome-host`); same recording rules; confirm systemd, `setfacl`, Python and AWS CLI versions, instance role name
+- [ ] T002 [P] Read-only survey of the Plant Reactome host; same recording rules; confirm systemd, `setfacl`, Python and AWS CLI versions, instance role name
 - [ ] T003 [P] Decide CPWS in/out per the spec's assumptions; record the decision in research.md
 
 **Checkpoint**: unknowns table in research.md filled
@@ -29,12 +29,16 @@ description: "Tasks for the multi-host monitoring feature"
 
 ## Phase 2: Foundational
 
-- [ ] T004 `collector/install.sh`: add prerequisite checks (systemctl, python3 ≥ 3.8, aws, setfacl) that stop with a clear message naming the missing tool and the package to install on Ubuntu and Amazon Linux
+- [ ] T004 `collector/install.sh`: add prerequisite checks (systemctl, python3 ≥ 3.8, aws, setfacl) that stop with a clear message naming the missing tool and the package to install on common distributions
 - [ ] T005 [P] `collector/install.sh`: verify the instance role can be resolved (`aws sts get-caller-identity`) and warn if not, without aborting
 - [ ] T006 [P] `site/app.js`: sort `state.hosts` by `order` (stable), give each section `id="host-<name>"`
-- [ ] T007 Run the local fake-log suite (`scratchpad` recipe in README) and a `--state-dir` dry run on reactome.org to confirm no regression from T004–T006
+- [ ] T007 Run `collector/selftest.sh` and a `--state-dir` dry run on reactome.org to confirm no regression from T004–T006
+- [x] T007a [P] `site/app.js`: the events table's "checked every 5 min" text uses the host's `interval_seconds` (spec edge case: different reporting interval) — done 2026-09-08
 
-**Checkpoint**: install script and page accept multiple hosts without behaviour change for one host
+- [ ] T020 [US3] `infra/status-site.yaml`: `Transform: AWS::LanguageExtensions`, `HostRoles` parameter (`host=role,host=role`) and `Fn::ForEach`-generated per-host managed policies (PutObject on `data/<host>/*`, `raw/<host>/*`; ListBucket with `s3:prefix` condition on those two prefixes) attached to the named role; keep the shared policy for `EC2CloudwatchAgentRole`
+- [ ] T021 [US3] `infra/deploy.sh`: pass `HOST_ROLES` env var through to the parameter; document in README
+
+**Checkpoint**: install script, permissions and page accept multiple hosts without behaviour change for one host
 
 ---
 
@@ -78,9 +82,7 @@ description: "Tasks for the multi-host monitoring feature"
 
 **Independent Test**: from Plant Reactome, `aws s3 cp` to `data/reactome.org/x` is denied; to `data/<own>/x` succeeds (then delete the test object).
 
-- [ ] T020 [US3] `infra/status-site.yaml`: `HostRoles` parameter (`host=role,host=role`) and a per-host managed policy (PutObject on `data/<host>/*`, `raw/<host>/*`; ListBucket with `s3:prefix` condition on those two prefixes) attached to the named role; keep the shared policy for `EC2CloudwatchAgentRole`
-- [ ] T021 [US3] `infra/deploy.sh`: pass `HOST_ROLES` env var through to the parameter; document in README
-- [ ] T022 [US3] Deploy the stack; run the independent test from Plant Reactome; record the shared-role exception for curator in research.md and README
+- [ ] T022 [US3] Deploy the stack (T020/T021 are in Phase 2); run the independent test from the Plant Reactome host; record the shared-role exception for curator in research.md and README
 
 **Checkpoint**: permission model matches the spec
 
@@ -101,7 +103,7 @@ description: "Tasks for the multi-host monitoring feature"
 
 ## Dependencies
 
-- Phase 2 before any story. US1 before US2 (the page must handle two hosts before a second host reports). T020 before T017. US4 after US1.
+- Phase 2 (which now includes the per-host policy work T020/T021) before any story. US1 before US2 (the page must handle two hosts before a second host reports). US4 after US1.
 - T001–T003 are read-only and can start immediately.
 
 ## Parallel Example

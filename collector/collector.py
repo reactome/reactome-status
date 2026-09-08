@@ -10,7 +10,7 @@ Outputs written under s3://<bucket>/<prefix>/ :
   series/24h.json        5-min points for the last 24 h
   series/7d.json         30-min points for the last 7 d
   series/90d.json        6-h points for the last 90 d
-  events.json            service restarts (with time-to-healthy) for 90 d
+  events.json            the 500 most recent service restart / outage / recovery events
 and under s3://<bucket>/raw/<host>/YYYY/MM/DD/HHMM.json an immutable archive
 of every snapshot (expired by an S3 lifecycle rule).
 

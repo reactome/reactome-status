@@ -18,7 +18,7 @@ does not, and a missing report *is* the outage signal.
 | `site/` | The static page: `index.html`, `app.js`, `style.css`, vendored [uPlot](https://github.com/leeoniya/uPlot), `hosts.json` (list of hosts shown). |
 | `infra/status-site.yaml` | CloudFormation: private S3 bucket, CloudFront (OAC, HTTPS), lifecycle rule, IAM upload policy. |
 | `infra/deploy.sh` | Certificate request, stack deploy, site upload. |
-| `docs/PLAN.md` | Original design notes and survey of the production host. |
+| `docs/PLAN.md` | Original design notes. |
 
 ## Data in the bucket
 
@@ -27,7 +27,7 @@ data/<host>/latest.json        current snapshot            (Cache-Control 60 s)
 data/<host>/series/24h.json    5-min points, last 24 h
 data/<host>/series/7d.json     30-min points, last 7 d
 data/<host>/series/90d.json    6-h points, last 90 d
-data/<host>/events.json        restarts / outages, last 90 d
+data/<host>/events.json        the 500 most recent restart / outage / recovery events
 raw/<host>/YYYY/MM/DD/HHMM.json  every snapshot, expired after 90 d by S3 lifecycle
 site/                          the page itself (served via a CloudFront origin path; hosts cannot write here)
 ```
@@ -109,7 +109,17 @@ checked against it. Features live under `specs/`:
 Workflow in Claude Code: `/speckit-specify` (new feature) → `/speckit-clarify` (optional) →
 `/speckit-plan` → `/speckit-tasks` → `/speckit-implement`; `/speckit-analyze` checks the
 artifacts against each other and the constitution; `/speckit-converge` compares the codebase
-with a spec and appends remaining work as tasks. Small fixes skip the ceremony.
+with a spec and appends remaining work as tasks. The commands act on the feature named in the
+machine-local `.specify/feature.json` (not committed); set `SPECIFY_FEATURE_DIRECTORY` or edit
+that file to point at another feature, e.g. `specs/000-status-page-baseline`. The constitution
+says which changes need a spec; small fixes skip the ceremony.
+
+## Collector self-test
+
+`collector/selftest.sh` runs the collector against a fake access log in a scratch directory and
+checks first-run behaviour, grouping, rotation carry-over, the unreadable-log path and the
+root/unsafe-run refusals. Run it before committing collector changes; the constitution's
+"verified before deployed" principle relies on it together with a `--state-dir` dry run on a host.
 
 ## Local development of the page
 

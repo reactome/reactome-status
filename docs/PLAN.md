@@ -1,19 +1,17 @@
-# Reactome status page — plan
+# Reactome status page — original plan (historical)
+
+These are the design notes from the first day. The current design is described by the README,
+`.specify/memory/constitution.md` and `specs/000-status-page-baseline/`; where they differ, those win.
 
 Goal: a static page at https://status.reactome.org (S3 + CloudFront) showing health,
 uptime and traffic statistics for production services, fed by a collector that runs
 on each production host and pushes a snapshot to S3 every 5 minutes. The page keeps
 working when a host is down; a stale snapshot *is* the down signal.
 
-## Survey of the production host
-
-The initial survey of production-host (services, ports, log locations, tooling) informed the
-design below but is kept out of this public repository; see the internal notes.
-
 ## Architecture
 
 ```
- production-host ─┐   every 5 min            ┌─ S3 bucket (private) ──────┐   CloudFront + ACM   status.reactome.org
+ production host ─┐   every 5 min            ┌─ S3 bucket (private) ──────┐   CloudFront + ACM   status.reactome.org
  curator (later)─┼─ collector.py ─ s3 sync ─▶ data/<host>/latest.json     ├──────────────────▶  static HTML/JS
  other hosts    ─┘                          │  data/<host>/series/{24h,7d,90d}.json, events.json
                                             │  raw/<host>/YYYY/MM/DD/HHMM.json (90-day lifecycle)
@@ -28,7 +26,7 @@ services, probes and log path so curator.reactome.org is just another config.
 
 Collected each run:
 - **Service state**: `systemctl is-active` for apache2, tomcat, neo4j, solr, mysql, docker; `docker ps` for the chatbot containers.
-- **HTTP probes** with latency: ContentService/AnalysisService version endpoints, PathwayBrowser, neo4j :7474, solr :8983 (401 = alive; real ping if creds provided), chatbot :8000/:8001.
+- **HTTP probes** with latency: ContentService/AnalysisService version endpoints, PathwayBrowser, neo4j , solr  (401 = alive; real ping if creds provided), chatbot /.
 - **Apache mod_status**: requests/sec, busy vs idle workers, avg request duration.
 - **Access log window** (last 5 min, read from a saved byte offset so the 530 MB file is never re-read; rotation-safe): hits, 2xx/3xx/4xx/5xx counts, p50/p95 response time, bytes — bucketed by service prefix (/ContentService, /AnalysisService, /PathwayBrowser, /content, /chat, other). Aggregates only; no IPs or user agents ever leave the host.
 - **Host**: load, memory, swap, disk, uptime, boot time.
@@ -55,15 +53,15 @@ Small Lambda or CloudWatch alarm on "latest.json older than 15 min" → email/Sl
 
 ## Rollout
 1. Repo skeleton: `collector/`, `site/`, `infra/`, README.
-2. Collector written and tested on production-host writing to a local dir (no AWS changes needed yet).
+2. Collector written and tested on production host writing to a local dir (no AWS changes needed yet).
 3. Infra: bucket, CloudFront, cert, IAM policy, DNS record.
 4. Frontend against real snapshots; publish.
-5. Systemd timer installed on production-host (needs a sudo session).
+5. Systemd timer installed on production host (needs a sudo session).
 6. Add curator.reactome.org with its own config.
 
 ## Open questions
 - Who applies the AWS changes (IAM policy, bucket, CloudFront, ACM)? No AWS credentials are configured on this workstation.
 - Public page, or restricted? (Affects nothing in the data model; aggregates only either way.)
 - Solr credentials for a real ping, or is "port answers" good enough?
-- Installing the systemd unit and a service user needs sudo on production-host (password required).
+- Installing the systemd unit and a service user needs sudo on production host (password required).
 - Preferred IaC: CloudFormation vs Terraform.
