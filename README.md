@@ -19,6 +19,7 @@ does not, and a missing report *is* the outage signal.
 | `infra/status-site.yaml` | CloudFormation: private S3 bucket, CloudFront (OAC, HTTPS), lifecycle rule, IAM upload policy. |
 | `infra/deploy.sh` | Certificate request, stack deploy, site upload. |
 | `docs/PLAN.md` | Original design notes. |
+| `docs/BACKLOG.md` | Ideas and deferred recommendations, in priority order. |
 
 ## Data in the bucket
 
