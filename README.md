@@ -19,7 +19,7 @@ does not, and a missing report *is* the outage signal.
 | `infra/status-site.yaml` | CloudFormation: private S3 bucket, CloudFront (OAC, HTTPS), lifecycle rule, IAM upload policy. |
 | `infra/deploy.sh` | Certificate request, stack deploy, site upload. |
 | `docs/PLAN.md` | Original design notes. |
-| `docs/BACKLOG.md` | Ideas and deferred recommendations, in priority order. |
+| `docs/BACKLOG.md` | Pointer to the backlog, which lives in [GitHub issues](https://github.com/reactome/reactome-status/issues). |
 
 ## Data in the bucket
 
