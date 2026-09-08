@@ -95,6 +95,22 @@ python3 collector/collector.py -c collector/config/reactome.org.json --state-dir
 3. Make sure the host's instance role has the upload policy (stack output `CollectorUploadPolicyArn`).
 4. Run `install.sh` on the host.
 
+## Spec-driven development
+
+The repo uses [Spec Kit](https://github.com/github/spec-kit). `.specify/memory/constitution.md`
+records the project's principles (independence from what it monitors, missing data is downtime,
+only aggregates leave a host, least privilege, inert uploads, …); every non-trivial change is
+checked against it. Features live under `specs/`:
+
+- `specs/000-status-page-baseline/` describes the system as delivered, for `/speckit-converge`.
+- `specs/001-multi-host-monitoring/` is the next feature (curator, Plant Reactome, CPWS): spec,
+  plan, research, data model, operator quickstart and task list.
+
+Workflow in Claude Code: `/speckit-specify` (new feature) → `/speckit-clarify` (optional) →
+`/speckit-plan` → `/speckit-tasks` → `/speckit-implement`; `/speckit-analyze` checks the
+artifacts against each other and the constitution; `/speckit-converge` compares the codebase
+with a spec and appends remaining work as tasks. Small fixes skip the ceremony.
+
 ## Local development of the page
 
 ```bash
