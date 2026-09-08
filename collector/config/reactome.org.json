@@ -16,7 +16,6 @@
     "mysql",
     "docker"
   ],
-  "docker_containers": [],
   "http_probes": [
     {
       "name": "Website",

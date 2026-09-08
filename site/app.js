@@ -669,8 +669,8 @@
     const close = el("button", "close", "✕"); close.type = "button"; close.title = "Close (Esc)"; close.setAttribute("aria-label", "Close enlarged chart");
     close.onclick = () => closeModal();
     const tools = el("div", "modal-tools");
-    const csv = el("button", "btn", "Download CSV"); csv.type = "button"; csv.title = "All series of this chart for the shown window, one row per time";
-    csv.onclick = () => downloadCsv(hostName, spec, view, seriesDefs, windowText);
+    const csv = el("button", "btn", "Download CSV"); csv.type = "button"; csv.title = "The series currently shown, for the shown window, one row per time";
+    csv.onclick = () => downloadCsv(hostName, spec, view, seriesDefs.filter((s, k) => modalPlots[0]?.series[k + 1]?.show !== false), windowText);
     const link = el("button", "btn", "Copy link"); link.type = "button"; link.title = "Copy a link that opens this chart with this range";
     link.onclick = async () => {
       writeHash();
@@ -729,7 +729,7 @@
     }
   }
 
-  /** CSV of the visible window: ISO time first, then one column per series (all series, hidden ones too). */
+  /** CSV of the visible window: ISO time first, then one column per series currently shown. */
   function downloadCsv(hostName, spec, view, seriesDefs, windowText) {
     const esc = (v) => {
       let t = v == null ? "" : String(v);

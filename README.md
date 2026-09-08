@@ -12,7 +12,7 @@ does not, and a missing report *is* the outage signal.
 
 | Path | What |
 |---|---|
-| `collector/collector.py` | Stdlib-only Python 3 collector. systemd units, HTTP/TCP health checks, Apache `mod_status`, access-log aggregates, host load/memory/disk, restart detection. Uploads with the AWS CLI. (Docker container checks exist in the code but are unused: the collector deliberately has no Docker socket access; containers are checked over HTTP/TCP instead.) |
+| `collector/collector.py` | Stdlib-only Python 3 collector. systemd units, HTTP/TCP health checks, Apache `mod_status`, access-log aggregates, host load/memory/disk, restart detection. Uploads with the AWS CLI. Containers are checked over HTTP/TCP; the collector deliberately has no Docker socket access. |
 | `collector/config/<host>.json` | Per-host configuration (what to check, log path, S3 prefix). |
 | `collector/*.service`, `*.timer`, `install.sh` | systemd units and the sudo install script. |
 | `site/` | The static page: `index.html`, `app.js`, `style.css`, vendored [uPlot](https://github.com/leeoniya/uPlot), `hosts.json` (list of hosts shown). |

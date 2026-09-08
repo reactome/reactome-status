@@ -30,7 +30,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 NOW = time.time()
 STATE = {}   # previous run's state, loaded in main()
 
@@ -161,22 +161,6 @@ def _systemd_ts(s):
         return dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return s
-
-
-def docker_containers(names):
-    if not names:
-        return {}
-    rc, so, _ = run(["docker", "inspect", "-f", "{{.Name}}\t{{.State.Status}}\t{{.State.StartedAt}}\t{{.RestartCount}}"] + names)
-    out = {n: {"type": "docker", "state": "missing", "up": False, "since": None, "restarts": 0} for n in names}
-    for line in so.splitlines():
-        parts = line.split("\t")
-        if len(parts) != 4:
-            continue
-        name = parts[0].lstrip("/")
-        started = parts[2][:19] + "Z" if parts[2] else None
-        out[name] = {"type": "docker", "state": parts[1], "up": parts[1] == "running",
-                     "since": started, "restarts": int(parts[3] or 0)}
-    return out
 
 
 # ------------------------------------------------------------------------- probes
@@ -557,17 +541,23 @@ def compact_point(snap):
 
 
 def rollup(db, seconds, bucket):
-    """Average numeric fields per `bucket` seconds over the last `seconds`."""
+    """Average numeric fields per `bucket` seconds over the last `seconds`.
+    Rows are streamed in time order and merged one bucket at a time, so memory is bounded by
+    one bucket (72 rows for the 90-day series) rather than by the whole history."""
     since = int(NOW) - seconds
-    rows = db.execute("SELECT ts, json FROM points WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
+    cur = db.execute("SELECT ts, json FROM points WHERE ts >= ? ORDER BY ts", (since,))
     if bucket <= CONFIG.get("interval_seconds", 300):
-        return [json.loads(j) for _, j in rows]
-    buckets = {}
-    for ts, j in rows:
-        buckets.setdefault(ts - ts % bucket, []).append(json.loads(j))
-    out = []
-    for b, pts in sorted(buckets.items()):
-        out.append(_merge_points(b, pts))
+        return [json.loads(j) for _, j in cur]
+    out, current, pts = [], None, []
+    for ts, j in cur:
+        b = ts - ts % bucket
+        if current is not None and b != current:
+            out.append(_merge_points(current, pts))
+            pts = []
+        current = b
+        pts.append(json.loads(j))
+    if pts:
+        out.append(_merge_points(current, pts))
     return out
 
 
@@ -703,7 +693,6 @@ def main():
 
     services = {}
     services.update(systemd_units(CONFIG.get("systemd_units", [])))
-    services.update(docker_containers(CONFIG.get("docker_containers", [])))
     probes = {}
     probes.update(http_probes(CONFIG.get("http_probes", [])))
     probes.update(tcp_probes(CONFIG.get("tcp_probes", [])))
