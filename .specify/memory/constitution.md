@@ -85,7 +85,9 @@ idempotent and prints the installed version.
 - **Public repository**: no host survey results, credentials, account identifiers, instance
   names, login names, service versions, port inventories or hardware sizes; operational detail
   only where the code itself requires it (for example an IAM role name used as a parameter
-  default).
+  default). Security weaknesses and hardening gaps are never filed as public issues or written
+  into public documents; they go to GitHub's private vulnerability reporting or an internal
+  tracker, and become public only as the commit that fixes them.
 - **Privileged steps**: anything needing root on a production host is a script the operator
   runs; the tooling stages it and prints the exact command.
 
@@ -108,4 +110,4 @@ requires either changing the code or amending this document, with the amendment 
 the version line below and the reason in the commit message. Reviews check compliance with
 the principles explicitly.
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-09-08 (III exceptions stated, IV and VIII made accurate, workflow gate clarified)
+**Version**: 1.1.1 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-09-08 (1.1.0: III exceptions, IV/VIII accuracy, workflow gate; 1.1.1: security gaps are not public issues)
