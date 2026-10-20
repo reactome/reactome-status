@@ -1,0 +1,77 @@
+{
+  "state_dir": "/var/lib/reactome-watchdog",
+  "evidence_dir": "/var/lib/reactome-watchdog/evidence",
+  "pause_file": "/etc/reactome-watchdog/PAUSE",
+  "jstat": "/usr/bin/jstat",
+  "access_log": "/var/log/apache2/access.log",
+  "dry_run": false,
+  "services": {
+    "neo4j": {
+      "unit": "neo4j",
+      "restart": false,
+      "_comment": "dependency only: Tomcat is not restarted while Neo4j is down; Neo4j itself is left to people",
+      "probes": [
+        {
+          "name": "bolt",
+          "type": "tcp",
+          "host": "127.0.0.1",
+          "port": 7687,
+          "timeout_s": 10
+        }
+      ]
+    },
+    "tomcat": {
+      "unit": "tomcat",
+      "java_user": "tomcat",
+      "requires": [
+        "neo4j"
+      ],
+      "fail_threshold": 3,
+      "startup_grace_s": 600,
+      "max_restarts": 2,
+      "restart_window_s": 3600,
+      "restart_timeout_s": 180,
+      "probes": [
+        {
+          "name": "ContentService",
+          "type": "http",
+          "url": "http://127.0.0.1:8080/ContentService/data/database/version",
+          "timeout_s": 20
+        },
+        {
+          "name": "AnalysisService",
+          "type": "http",
+          "url": "http://127.0.0.1:8080/AnalysisService/database/version",
+          "timeout_s": 20
+        }
+      ]
+    },
+    "solr": {
+      "unit": "solr",
+      "java_user": "solr",
+      "fail_threshold": 3,
+      "startup_grace_s": 300,
+      "max_restarts": 2,
+      "restart_window_s": 3600,
+      "restart_timeout_s": 180,
+      "probes": [
+        {
+          "name": "Solr",
+          "type": "http",
+          "url": "http://127.0.0.1:8983/solr/",
+          "timeout_s": 20
+        }
+      ]
+    }
+  },
+  "prune": [
+    {
+      "glob": "/var/lib/reactome-watchdog/evidence/*",
+      "keep": 30
+    },
+    {
+      "glob": "/var/tmp/tomcat-heapdumps/*.hprof",
+      "keep": 1
+    }
+  ]
+}

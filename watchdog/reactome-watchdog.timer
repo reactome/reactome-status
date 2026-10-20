@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Reactome watchdog every minute
+
+[Timer]
+# second 30, away from the :00 cron jobs (including the half-hourly Apache restart)
+OnCalendar=*:*:30
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
