@@ -16,6 +16,7 @@ does not, and a missing report *is* the outage signal.
 | `collector/config/<host>.json` | Per-host configuration (what to check, log path, S3 prefix). |
 | `collector/*.service`, `*.timer`, `install.sh` | systemd units and the sudo install script. |
 | `site/` | The static page: `index.html`, `app.js`, `style.css`, vendored [uPlot](https://github.com/leeoniya/uPlot), `hosts.json` (list of hosts shown). |
+| `watchdog/` | Restarts a service that is running but not answering (root, separate unit, no uploads). See [`watchdog/README.md`](watchdog/README.md). |
 | `infra/status-site.yaml` | CloudFormation: private S3 bucket, CloudFront (OAC, HTTPS), lifecycle rule, IAM upload policy. |
 | `infra/deploy.sh` | Certificate request, stack deploy, site upload. |
 | `docs/PLAN.md` | Original design notes. |
@@ -128,6 +129,13 @@ root/unsafe-run refusals. Run it before committing collector changes; the consti
 # pull real snapshots from a host into site/data/ (git-ignored) then serve
 cd site && python3 -m http.server 8765
 ```
+
+## Watchdog
+
+The collector only observes. `watchdog/` restarts Tomcat or Solr when they are running but
+have stopped answering, after saving evidence; it has startup grace, dependency checks, a
+restart limit and a pause file. Its host config is private (git-ignored). See
+[`watchdog/README.md`](watchdog/README.md) and constitution principle XI.
 
 ## Restart tracking
 

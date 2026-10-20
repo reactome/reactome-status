@@ -6,3 +6,6 @@ state/
 __pycache__/
 *.pyc
 .DS_Store
+# watchdog host configs are private (internal ports, paths); only the example is committed
+watchdog/config/*.json
+!watchdog/config/example.json

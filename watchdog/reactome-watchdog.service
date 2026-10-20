@@ -1,0 +1,10 @@
+[Unit]
+Description=Reactome watchdog: restart services that are running but not answering
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/reactome-watchdog/watchdog.py -c /etc/reactome-watchdog/config.json
+# a restart can take several minutes; the timer skips runs while one is in progress
+TimeoutStartSec=15min
+Nice=-5

@@ -72,6 +72,18 @@ it is uploaded. A change to the collector is run against a fake log locally and 
 production with a private state directory before it is installed. The install command is
 idempotent and prints the installed version.
 
+### XI. Only the watchdog acts, and it acts narrowly
+`watchdog/` is the one component that changes a host: it restarts a service that is
+running but not answering. Restarting units and dumping JVM threads need root, so it runs
+as root, as its own systemd unit, and principle IV's never-root rule applies to the
+collector, not to it. In exchange it uploads nothing, sends nothing off the host, acts only
+on units named in its config, never on a unit that is not active, inside its startup grace,
+or whose dependency is failing, makes at most a configured number of restarts per window,
+and stops entirely while its pause file exists. Its evidence (which may contain client
+addresses) stays on the host, readable by root only; its event log carries no client data.
+The collector never gains the ability to act. A change to the watchdog runs `selftest.py`
+and a `--dry-run` on the host before it is installed.
+
 ## Constraints
 
 - **Stack**: Python 3 standard library only on the hosts (plus the AWS CLI); plain HTML, CSS
@@ -85,7 +97,9 @@ idempotent and prints the installed version.
 - **Public repository**: no host survey results, credentials, account identifiers, instance
   names, login names, service versions, port inventories or hardware sizes; operational detail
   only where the code itself requires it (for example an IAM role name used as a parameter
-  default). Security weaknesses and hardening gaps are never filed as public issues or written
+  default). Host configuration that names internal ports or paths and is not needed to
+  understand the code is private: it is git-ignored (`watchdog/config/*.json`) and only an
+  example is committed. Security weaknesses and hardening gaps are never filed as public issues or written
   into public documents; they go to GitHub's private vulnerability reporting or an internal
   tracker, and become public only as the commit that fixes them.
 - **Privileged steps**: anything needing root on a production host is a script the operator
@@ -110,4 +124,4 @@ requires either changing the code or amending this document, with the amendment 
 the version line below and the reason in the commit message. Reviews check compliance with
 the principles explicitly.
 
-**Version**: 1.1.1 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-09-08 (1.1.0: III exceptions, IV/VIII accuracy, workflow gate; 1.1.1: security gaps are not public issues)
+**Version**: 1.2.0 | **Ratified**: 2026-09-08 | **Last Amended**: 2026-10-20 (1.1.0: III exceptions, IV/VIII accuracy, workflow gate; 1.1.1: security gaps are not public issues; 1.2.0: XI watchdog, private host configs)
