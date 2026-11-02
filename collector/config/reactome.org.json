@@ -34,6 +34,12 @@
       "capture_body": true
     },
     {
+      "name": "Search",
+      "url": "http://localhost/content/query?q=TP53",
+      "expect_text": "class=\"result-title\"",
+      "max_bytes": 262144
+    },
+    {
       "name": "AnalysisService",
       "url": "http://localhost/AnalysisService/database/version",
       "capture_body": true

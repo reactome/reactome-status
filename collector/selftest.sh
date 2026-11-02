@@ -29,4 +29,19 @@ out=$(python3 "$HERE/collector.py" -c "$T/cfg.json" --no-upload 2>&1 || true)
 check "refuses --no-upload on the live dir"   "$(grep -c 'refusing a --no-upload' <<<"$out")" "1"
 head -c 3000 /dev/urandom > "$T/state/points.sqlite"; line / 200 1 >> "$T/access.log"; run >/dev/null
 check "corrupt sqlite quarantined"            "$(ls "$T/state" | grep -c corrupt)" "1"
+# expect_text past the default 64 KiB read window needs max_bytes
+mkdir "$T/www"; { head -c 70000 /dev/zero | tr '\0' ' '; echo '<h4 class="result-title">'; } > "$T/www/page.html"
+python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$T/www" > "$T/http.log" 2>&1 & srv=$!
+port=; for _ in $(seq 50); do port=$(grep -o 'port [0-9]*' "$T/http.log" | grep -o '[0-9]*' || true); [[ -n "$port" ]] && break; sleep 0.1; done
+probe() { python3 - "$HERE/collector.py" "$port" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1]); c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+p = {"name": "x", "url": f"http://127.0.0.1:{sys.argv[2]}/page.html", "expect_text": 'class="result-title"', **json.loads(sys.argv[3])}
+print(c.http_probes([p])["x"]["ok"])
+PY
+}
+check "expect_text beyond 64 KiB fails by default" "$(probe '{}')" "False"
+check "expect_text found with max_bytes"           "$(probe '{"max_bytes": 262144}')" "True"
+kill $srv
+check "test server answered"                  "$([[ -n "$port" ]] && echo yes)" "yes"
 exit $fail

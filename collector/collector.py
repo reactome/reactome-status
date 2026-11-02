@@ -30,7 +30,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 NOW = time.time()
 STATE = {}   # previous run's state, loaded in main()
 
@@ -175,7 +175,8 @@ def http_probes(probes):
             req = urllib.request.Request(p["url"], headers=headers)
             opener = _OPENER_INSECURE if p.get("insecure") else _OPENER
             with opener.open(req, timeout=p.get("timeout", 10)) as r:
-                body = r.read(65536)
+                # expect_text may sit far into a templated page; read more only when asked, capped at 1 MiB
+                body = r.read(min(int(p.get("max_bytes", 65536)), 1 << 20))
                 res["status"] = r.status
                 expect = p.get("expect_status", [200])
                 res["ok"] = r.status in expect
