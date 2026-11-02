@@ -24,7 +24,8 @@
       "unit": "tomcat",
       "java_user": "tomcat",
       "requires": [
-        "neo4j"
+        "neo4j",
+        "solr"
       ],
       "fail_threshold": 3,
       "startup_grace_s": 600,
@@ -43,6 +44,13 @@
           "type": "http",
           "url": "http://127.0.0.1:8080/AnalysisService/database/version",
           "timeout_s": 20
+        },
+        {
+          "name": "ContentPages",
+          "type": "http",
+          "url": "http://127.0.0.1:8080/content/query?q=TP53",
+          "timeout_s": 20,
+          "_comment": "the website's search and pages (content.war); it can fail to deploy when Tomcat starts before Neo4j answers, while the other webapps come up fine"
         }
       ]
     },
